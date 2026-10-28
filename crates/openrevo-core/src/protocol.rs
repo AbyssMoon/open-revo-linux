@@ -102,6 +102,25 @@ impl ChargeProfile {
     }
 }
 
+/// Лимит заряда, % (`0x07B9`). 100 — без лимита.
+pub const CHARGE_LIMIT_MIN: u8 = 40;
+pub const CHARGE_LIMIT_MAX: u8 = 100;
+
+/// Лимит заряда и соблюдает ли его EC (`0x0742` бит 2). Без обхода из
+/// патча 0003 EC лимит не соблюдает, сколько ни пиши в `0x07B9`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChargeLimit {
+    pub percent: u8,
+    pub active: bool,
+}
+
+impl ChargeLimit {
+    /// Ограничивает ли лимит заряд на самом деле.
+    pub fn effective(self) -> bool {
+        self.active && self.percent < CHARGE_LIMIT_MAX
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

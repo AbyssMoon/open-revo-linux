@@ -32,6 +32,10 @@ pub mod qobject {
         #[qproperty(i32, profiles_available)]
         /// `high_capacity`, `balanced`, `stationary` или пусто.
         #[qproperty(QString, charge_profile)]
+        /// Лимит заряда, % (-1 — драйвер не поддерживает; 100 — без лимита).
+        #[qproperty(i32, charge_limit)]
+        /// EC соблюдает лимит (`0x0742` бит 2).
+        #[qproperty(bool, charge_limit_active)]
         /// -1 — не поддерживается, 0 — выключен, 1 — включён.
         #[qproperty(i32, fn_lock)]
         /// Вентиляторы, % (-1 — неизвестно).
@@ -69,6 +73,9 @@ pub mod qobject {
         fn set_charge(self: Pin<&mut Controller>, profile: &QString);
 
         #[qinvokable]
+        fn request_charge_limit(self: Pin<&mut Controller>, percent: i32);
+
+        #[qinvokable]
         fn request_fn_lock(self: Pin<&mut Controller>, enabled: bool);
 
         /// Начать принимать запросы от повторных запусков интерфейса.
@@ -96,6 +103,8 @@ pub struct ControllerRust {
     perf_raw: i32,
     profiles_available: i32,
     charge_profile: QString,
+    charge_limit: i32,
+    charge_limit_active: bool,
     fn_lock: i32,
     fan1: i32,
     fan2: i32,
@@ -125,6 +134,8 @@ impl Default for ControllerRust {
             perf_raw: -1,
             profiles_available: 0,
             charge_profile: QString::default(),
+            charge_limit: -1,
+            charge_limit_active: false,
             fn_lock: -1,
             fan1: -1,
             fan2: -1,
@@ -278,6 +289,10 @@ impl qobject::Controller {
         self.as_mut().set_charge_profile(QString::from(
             s.charge_profile.map_or("", ChargeProfile::name),
         ));
+        self.as_mut()
+            .set_charge_limit(s.charge_limit.map_or(-1, |l| i32::from(l.percent)));
+        self.as_mut()
+            .set_charge_limit_active(s.charge_limit.is_some_and(|l| l.active));
         self.as_mut().set_fn_lock(s.fn_lock.map_or(-1, i32::from));
         self.as_mut().set_fan1(s.fan1_pct.map_or(-1, i32::from));
         self.as_mut().set_fan2(s.fan2_pct.map_or(-1, i32::from));
@@ -322,6 +337,13 @@ impl qobject::Controller {
             return;
         };
         self.apply_action(ipc::request(&Request::SetChargeProfile { profile }));
+    }
+
+    pub fn request_charge_limit(self: Pin<&mut Self>, percent: i32) {
+        let Ok(percent) = u8::try_from(percent) else {
+            return;
+        };
+        self.apply_action(ipc::request(&Request::SetChargeLimit { percent }));
     }
 
     pub fn request_fn_lock(self: Pin<&mut Self>, enabled: bool) {

@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::protocol::{ChargeProfile, PerfMode};
+use crate::protocol::{ChargeLimit, ChargeProfile, PerfMode};
 use crate::sysinfo::SysInfo;
 
 pub const DEFAULT_SOCKET: &str = "/run/openrevo.sock";
@@ -23,8 +23,10 @@ pub enum Request {
     Status,
     SetPerfMode { mode: PerfMode },
     SetChargeProfile { profile: ChargeProfile },
+    /// Лимит заряда, %; 100 — без лимита.
+    SetChargeLimit { percent: u8 },
     SetFnLock { enabled: bool },
-    /// Повторно применить сохранённые режим и профиль заряда.
+    /// Повторно применить сохранённые режим, профиль и лимит заряда.
     Reapply,
 }
 
@@ -40,6 +42,9 @@ pub struct Status {
     #[serde(default)]
     pub profiles_available: i32,
     pub charge_profile: Option<ChargeProfile>,
+    /// `None` — драйвер не поддерживает лимит для этой модели.
+    #[serde(default)]
+    pub charge_limit: Option<ChargeLimit>,
     #[serde(default)]
     pub fn_lock: Option<bool>,
     /// Вентиляторы, проценты.
@@ -119,6 +124,8 @@ mod tests {
         assert_eq!(serde_json::to_string(&r).unwrap(), r#"{"cmd":"set_perf_mode","mode":"turbo"}"#);
         let r: Request = serde_json::from_str(r#"{"cmd":"set_charge_profile","profile":"stationary"}"#).unwrap();
         assert!(matches!(r, Request::SetChargeProfile { profile: ChargeProfile::Stationary }));
+        let r = Request::SetChargeLimit { percent: 80 };
+        assert_eq!(serde_json::to_string(&r).unwrap(), r#"{"cmd":"set_charge_limit","percent":80}"#);
     }
 
     #[test]

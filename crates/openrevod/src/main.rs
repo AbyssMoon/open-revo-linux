@@ -1,6 +1,6 @@
 //! openrevod — системный демон (запускается от root).
 //!
-//! * переключает режим и профиль заряда по запросам клиентов через Unix-сокет;
+//! * переключает режим, профиль и лимит заряда по запросам клиентов через Unix-сокет;
 //! * сохраняет выбор и восстанавливает его после загрузки (tuxedo_io при
 //!   загрузке модуля всегда ставит «баланс») и выхода из сна;
 //! * замечает, что режим сменили в обход демона (клавишей или прошивкой), и
@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use openrevo_core::backend::{self, fan_percent, Backend, Mock, TuxedoIo};
 use openrevo_core::ipc::{Request, Response, Status, DEFAULT_SOCKET};
 use openrevo_core::power::EnergyCounter;
-use openrevo_core::protocol::{ChargeProfile, PerfMode};
+use openrevo_core::protocol::{self, ChargeProfile, PerfMode};
 use openrevo_core::sysinfo::SysInfo;
 use serde::{Deserialize, Serialize};
 
@@ -32,6 +32,9 @@ struct Saved {
     perf_mode: Option<PerfMode>,
     #[serde(default)]
     charge_profile: Option<ChargeProfile>,
+    /// Только то, что поставил пользователь: заводское значение не трогаем.
+    #[serde(default)]
+    charge_limit: Option<u8>,
 }
 
 struct Daemon {
@@ -61,7 +64,7 @@ impl Daemon {
         self.backend.perf_mode_raw().ok().and_then(PerfMode::from_raw)
     }
 
-    /// Вернуть сохранённые режим и профиль заряда, если в прошивке другие.
+    /// Вернуть сохранённые режим, профиль и лимит заряда, если в прошивке другие.
     fn reapply(&mut self, reason: &str) {
         if let Some(mode) = self.saved.perf_mode {
             if self.current_mode() != Some(mode) {
@@ -79,6 +82,17 @@ impl Daemon {
                 }
             }
         }
+        if let Some(p) = self.saved.charge_limit {
+            let ok = self.backend.charge_limit().is_ok_and(|l| {
+                l.percent == p && (l.active || p >= protocol::CHARGE_LIMIT_MAX)
+            });
+            if !ok {
+                match backend::apply_charge_limit(self.backend.as_mut(), p) {
+                    Ok(()) => log(&format!("лимит заряда {p}% восстановлен ({reason})")),
+                    Err(e) => log(&format!("лимит заряда {p}% не восстановлен ({reason}): {e}")),
+                }
+            }
+        }
         self.last_mode = self.current_mode();
     }
 
@@ -89,6 +103,15 @@ impl Daemon {
         let mut errors = Vec::new();
         let perf_mode_raw = ok(&mut errors, self.backend.perf_mode_raw(), "режим");
         let charge_profile = ok(&mut errors, self.backend.charge_profile(), "профиль заряда");
+        let charge_limit = match self.backend.charge_limit() {
+            Ok(l) => Some(l),
+            // Нет патча 0003 или модель не та — просто не показываем.
+            Err(backend::Error::Unsupported(_)) => None,
+            Err(e) => {
+                errors.push(format!("лимит заряда: {e}"));
+                None
+            }
+        };
         // Есть не на всех моделях — ошибку не показываем.
         let fn_lock = self.backend.fn_lock().ok();
         let fan1_pct = self.backend.fan_raw(0).ok().map(fan_percent);
@@ -106,6 +129,7 @@ impl Daemon {
             perf_mode_saved: self.saved.perf_mode,
             profiles_available: self.profiles_available,
             charge_profile,
+            charge_limit,
             fn_lock,
             fan1_pct,
             fan2_pct,
@@ -129,6 +153,13 @@ impl Daemon {
                 backend::apply_charge_profile(self.backend.as_mut(), profile).map(|()| {
                     log(&format!("профиль заряда «{}»", profile.name()));
                     self.saved.charge_profile = Some(profile);
+                    self.save();
+                })
+            }
+            Request::SetChargeLimit { percent } => {
+                backend::apply_charge_limit(self.backend.as_mut(), percent).map(|()| {
+                    log(&format!("лимит заряда {percent}%"));
+                    self.saved.charge_limit = Some(percent);
                     self.save();
                 })
             }

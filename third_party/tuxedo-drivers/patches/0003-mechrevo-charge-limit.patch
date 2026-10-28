@@ -1,0 +1,181 @@
+Лимит заряда в процентах для MECHREVO WUJIE 15X (плата WUJIE15-GX5HRXG).
+
+Лимит лежит в EC 0x07B9 (биты 0–6, %), бит 2 в 0x0742 — EC его соблюдает.
+EC берёт 0x07B9, только если 0x07C3 или 0x0770 равен 4 или 5, иначе — свою
+сохранённую копию (0x087F, хосту недоступна). MECHREVO оставляет её
+неинициализированной, поэтому запись в 0x07B9 игнорируется. Обход: на ~2 с
+поставить 0x07C3 = 4 — EC включит лимит и сохранит 0x07B9 как свою копию.
+Разобрано на WUJIE 14XA (EC 2.12):
+https://gist.github.com/w568w/957976b59906e0ce5d6c13ad342e1593
+
+Новые ioctl (только для платы из списка, иначе -EOPNOTSUPP):
+R_UW_CHARGE_LIMIT, R_UW_CHARGE_LIMIT_ACTIVE, W_UW_CHARGE_LIMIT (1–100),
+W_UW_CHARGE_LIMIT_UNLOCK (обход, ~2 с).
+
+diff --git a/src/tuxedo_io/tuxedo_io.c b/src/tuxedo_io/tuxedo_io.c
+--- a/src/tuxedo_io/tuxedo_io.c
++++ b/src/tuxedo_io/tuxedo_io.c
+@@ -524,12 +524,106 @@
+ 	return result;
+ }
+ 
++/*
++ * Open Revo: charge limit on MECHREVO boards (TongFang GXxHRXx, EC 2.12).
++ *
++ * 0x07B9 bits 0-6 hold the limit in percent, 0x0742 bit 2 is set while the EC
++ * enforces it. The EC enforces the limit only if 0x07C3 or 0x0770 equals 4 or
++ * 5, or if its stored copy of the limit (0x087F, not host accessible) is
++ * valid. MECHREVO ships an invalid stored limit, so writes to 0x07B9 are
++ * ignored. Setting 0x07C3 to 4 for about two seconds makes the EC enable the
++ * limit and save 0x07B9 as the stored limit; afterwards 0x07B9 works directly.
++ * See https://gist.github.com/w568w/957976b59906e0ce5d6c13ad342e1593
++ */
++#define UW_EC_CHARGE_LIMIT		0x07b9
++#define UW_EC_CHARGE_LIMIT_MASK		0x7f
++#define UW_EC_CHARGE_GATE		0x0742
++#define UW_EC_CHARGE_GATE_BIT		0x04
++#define UW_EC_CHARGE_STATE		0x07c3
++#define UW_EC_CHARGE_STATE2		0x0770
++#define UW_EC_CHARGE_STATE_LIMIT	0x04
++
++static bool uw_has_mechrevo_charge_limit(void)
++{
++	return dmi_match(DMI_BOARD_NAME, "WUJIE15-GX5HRXG");
++}
++
++static bool uw_charge_state_enables_limit(u8 state)
++{
++	return state == 0x04 || state == 0x05;
++}
++
++static int uw_charge_limit_get(u32 *limit)
++{
++	u8 data;
++	int status = uniwill_read_ec_ram(UW_EC_CHARGE_LIMIT, &data);
++	if (status < 0)
++		return status;
++	*limit = data & UW_EC_CHARGE_LIMIT_MASK;
++	return 0;
++}
++
++static int uw_charge_limit_active(u32 *active)
++{
++	u8 data;
++	int status = uniwill_read_ec_ram(UW_EC_CHARGE_GATE, &data);
++	if (status < 0)
++		return status;
++	*active = (data & UW_EC_CHARGE_GATE_BIT) ? 1 : 0;
++	return 0;
++}
++
++static int uw_charge_limit_set(u32 limit)
++{
++	u8 data;
++	int status;
++	if (limit < 1 || limit > 100)
++		return -EINVAL;
++	status = uniwill_read_ec_ram(UW_EC_CHARGE_LIMIT, &data);
++	if (status < 0)
++		return status;
++	return uniwill_write_ec_ram(UW_EC_CHARGE_LIMIT, (data & ~UW_EC_CHARGE_LIMIT_MASK) | limit);
++}
++
++static int uw_charge_limit_unlock(void)
++{
++	u8 gate, state, state2, now;
++	int status;
++
++	status = uniwill_read_ec_ram(UW_EC_CHARGE_GATE, &gate);
++	if (status < 0)
++		return status;
++	if (gate & UW_EC_CHARGE_GATE_BIT)
++		return 0;
++	status = uniwill_read_ec_ram(UW_EC_CHARGE_STATE, &state);
++	if (status < 0)
++		return status;
++	status = uniwill_read_ec_ram(UW_EC_CHARGE_STATE2, &state2);
++	if (status < 0)
++		return status;
++	// The EC already takes the limit from 0x07B9; nothing to work around.
++	if (uw_charge_state_enables_limit(state) || uw_charge_state_enables_limit(state2))
++		return 0;
++
++	status = uniwill_write_ec_ram(UW_EC_CHARGE_STATE, UW_EC_CHARGE_STATE_LIMIT);
++	if (status < 0)
++		return status;
++	// The EC checks the state once per second.
++	msleep(2000);
++	// Restore only our own value: the EC may have changed the state meanwhile.
++	status = uniwill_read_ec_ram(UW_EC_CHARGE_STATE, &now);
++	if (status >= 0 && now == UW_EC_CHARGE_STATE_LIMIT)
++		status = uniwill_write_ec_ram(UW_EC_CHARGE_STATE, state);
++	return status < 0 ? status : 0;
++}
++
+ static long uniwill_ioctl_interface(struct file *file, unsigned int cmd, unsigned long arg)
+ {
+ 	u32 result = 0;
+ 	u32 copy_result;
+ 	u32 argument;
+ 	u8 byte_data;
++	int status;
+ 	const char str_no_if[] = "";
+ 	char *str_uniwill_if;
+ 
+@@ -656,6 +750,19 @@
+ 				result = 3;
+ 			copy_result = copy_to_user((void *) arg, &result, sizeof(result));
+ 			break;
++		case R_UW_CHARGE_LIMIT:
++		case R_UW_CHARGE_LIMIT_ACTIVE:
++			if (!uw_has_mechrevo_charge_limit())
++				return -EOPNOTSUPP;
++			if (cmd == R_UW_CHARGE_LIMIT)
++				status = uw_charge_limit_get(&result);
++			else
++				status = uw_charge_limit_active(&result);
++			if (status < 0)
++				return status;
++			if (copy_to_user((void *) arg, &result, sizeof(result)))
++				return -EFAULT;
++			break;
+ #ifdef DEBUG
+ 		case R_TF_BC:
+ 			copy_result = copy_from_user(&uw_arg, (void *) arg, sizeof(uw_arg));
+@@ -712,6 +819,22 @@
+ 			copy_result = copy_from_user(&argument, (int32_t *) arg, sizeof(argument));
+ 			uw_set_performance_profile_v1(argument);
+ 			break;
++		case W_UW_CHARGE_LIMIT:
++			if (!uw_has_mechrevo_charge_limit())
++				return -EOPNOTSUPP;
++			if (copy_from_user(&argument, (int32_t *) arg, sizeof(argument)))
++				return -EFAULT;
++			status = uw_charge_limit_set(argument);
++			if (status < 0)
++				return status;
++			break;
++		case W_UW_CHARGE_LIMIT_UNLOCK:
++			if (!uw_has_mechrevo_charge_limit())
++				return -EOPNOTSUPP;
++			status = uw_charge_limit_unlock();
++			if (status < 0)
++				return status;
++			break;
+ #ifdef DEBUG
+ 		case W_TF_BC:
+ 			reg_write_return.dword = 0;
+diff --git a/src/tuxedo_io/tuxedo_io_ioctl.h b/src/tuxedo_io/tuxedo_io_ioctl.h
+--- a/src/tuxedo_io/tuxedo_io_ioctl.h
++++ b/src/tuxedo_io/tuxedo_io_ioctl.h
+@@ -111,4 +111,10 @@
+ 
+ #define W_UW_PERF_PROF		_IOW(MAGIC_WRITE_UW, 0x18, int32_t*)
+ 
++// Open Revo: charge limit on MECHREVO (EC 0x07B9, enforced when 0x0742 bit 2 is set)
++#define R_UW_CHARGE_LIMIT		_IOR(MAGIC_READ_UW, 0x40, int32_t*)
++#define R_UW_CHARGE_LIMIT_ACTIVE	_IOR(MAGIC_READ_UW, 0x41, int32_t*)
++#define W_UW_CHARGE_LIMIT		_IOW(MAGIC_WRITE_UW, 0x40, int32_t*)
++#define W_UW_CHARGE_LIMIT_UNLOCK	_IO(MAGIC_WRITE_UW, 0x41)
++
+ #endif

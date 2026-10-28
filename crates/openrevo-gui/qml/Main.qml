@@ -54,6 +54,8 @@ ApplicationWindow {
             s += " · " + (p > 0 ? "+" : "−") + Math.abs(p).toFixed(1) + " Вт";
         if (ctl.chargeProfile !== "" && ctl.chargeProfile !== "high_capacity")
             s += " · " + win.chargeTitle[ctl.chargeProfile].toLowerCase();
+        if (ctl.chargeLimitActive && ctl.chargeLimit > 0 && ctl.chargeLimit < 100)
+            s += " · заряд до " + ctl.chargeLimit + "%";
         return s;
     }
 
@@ -683,10 +685,56 @@ ApplicationWindow {
                             Layout.fillWidth: true
                             wrapMode: Text.Wrap
                             opacity: 0.7
-                            text: "Профиль хранит контроллер ноутбука (EC). Прошивка не останавливает зарядку "
-                                + "на проценте, как у других ноутбуков: в щадящих профилях она уменьшает ёмкость, "
-                                + "которую батарея считает полной. Индикатор всё равно доходит до 100%, а реальный "
-                                + "запас меньше — смотрите Вт·ч выше."
+                            text: "Профиль хранит контроллер ноутбука (EC). В щадящих профилях прошивка уменьшает "
+                                + "ёмкость, которую батарея считает полной: индикатор всё равно доходит до 100%, "
+                                + "а реальный запас меньше — смотрите Вт·ч выше."
+                        }
+
+                        // Лимит заряда: только если драйвер его поддерживает (патч 0003).
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 6
+                            visible: ctl.chargeLimit >= 0
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Label {
+                                    text: "Лимит заряда"
+                                    font.pixelSize: 15
+                                    font.bold: true
+                                }
+                                Item { Layout.fillWidth: true }
+                                Label {
+                                    font.pixelSize: 15
+                                    text: limitSlider.value >= 100 ? "без лимита" : Math.round(limitSlider.value) + "%"
+                                }
+                            }
+
+                            Slider {
+                                id: limitSlider
+                                Layout.fillWidth: true
+                                from: 40; to: 100; stepSize: 5
+                                snapMode: Slider.SnapAlways
+                                enabled: ctl.connected
+                                // Показываем 100, если EC лимит не соблюдает: заряжает всё равно до конца.
+                                value: ctl.chargeLimitActive ? ctl.chargeLimit : 100
+                                onPressedChanged: {
+                                    if (pressed) return;
+                                    const want = Math.round(value);
+                                    value = Qt.binding(() => ctl.chargeLimitActive ? ctl.chargeLimit : 100);
+                                    if (want !== (ctl.chargeLimitActive ? ctl.chargeLimit : 100))
+                                        ctl.requestChargeLimit(want);
+                                }
+                            }
+
+                            Label {
+                                Layout.fillWidth: true
+                                wrapMode: Text.Wrap
+                                opacity: 0.7
+                                text: "Зарядка останавливается на выбранном проценте. Прошивка MECHREVO с завода "
+                                    + "лимит не соблюдает — при первом включении Open Revo обходит это (около 2 секунд). "
+                                    + "Экспериментально: проверено на WUJIE 14XA, на 15X — пока нет."
+                            }
                         }
                         Item { Layout.fillHeight: true }
                     }

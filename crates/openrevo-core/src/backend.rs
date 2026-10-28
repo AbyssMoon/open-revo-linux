@@ -4,7 +4,7 @@
 use std::fs::{self, File, OpenOptions};
 use std::os::fd::AsRawFd;
 
-use crate::protocol::{ChargeProfile, PerfMode};
+use crate::protocol::{ChargeLimit, ChargeProfile, PerfMode, CHARGE_LIMIT_MAX, CHARGE_LIMIT_MIN};
 
 pub const TUXEDO_IO: &str = "/dev/tuxedo_io";
 const PLATFORM: &str = "/sys/devices/platform/tuxedo_keyboard";
@@ -42,6 +42,13 @@ pub trait Backend: Send {
     fn fan_raw(&mut self, fan: u8) -> Result<u8>;
     /// Температура CPU, по которой EC крутит вентиляторы, °C.
     fn ec_cpu_temp(&mut self) -> Result<u8>;
+    fn charge_limit(&mut self) -> Result<ChargeLimit>;
+    /// Записать `0x07B9`; соблюдать его EC начнёт только после
+    /// [`Backend::unlock_charge_limit`].
+    fn set_charge_limit(&mut self, percent: u8) -> Result<()>;
+    /// Обход заводской ошибки MECHREVO (патч 0003): EC включает лимит.
+    /// Занимает около 2 секунд.
+    fn unlock_charge_limit(&mut self) -> Result<()>;
 }
 
 // --- tuxedo_io ---------------------------------------------------------------
@@ -67,6 +74,12 @@ const R_UW_FAN_TEMP: u64 = ior(MAGIC_READ_UW, 0x12);
 const R_UW_MODE: u64 = ior(MAGIC_READ_UW, 0x14);
 const R_UW_PROFS_AVAILABLE: u64 = ior(MAGIC_READ_UW, 0x21);
 const W_UW_PERF_PROF: u64 = iow(MAGIC_WRITE_UW, 0x18);
+// Патч 0003.
+const R_UW_CHARGE_LIMIT: u64 = ior(MAGIC_READ_UW, 0x40);
+const R_UW_CHARGE_LIMIT_ACTIVE: u64 = ior(MAGIC_READ_UW, 0x41);
+const W_UW_CHARGE_LIMIT: u64 = iow(MAGIC_WRITE_UW, 0x40);
+// _IO: без аргумента, размер в номере 0.
+const W_UW_CHARGE_LIMIT_UNLOCK: u64 = (MAGIC_WRITE_UW << 8) | 0x41;
 
 pub struct TuxedoIo {
     dev: File,
@@ -98,7 +111,7 @@ impl TuxedoIo {
         // SAFETY: драйвер пишет в аргумент один int32 (copy_to_user sizeof(result)).
         let rc = unsafe { libc::ioctl(self.dev.as_raw_fd(), req as _, &mut v as *mut i32) };
         if rc < 0 {
-            return Err(Error::Io(format!("ioctl {req:#x}: {}", std::io::Error::last_os_error())));
+            return Err(ioctl_error(req));
         }
         Ok(v)
     }
@@ -107,9 +120,20 @@ impl TuxedoIo {
         // SAFETY: драйвер читает из аргумента один int32 (copy_from_user).
         let rc = unsafe { libc::ioctl(self.dev.as_raw_fd(), req as _, &v as *const i32) };
         if rc < 0 {
-            return Err(Error::Io(format!("ioctl {req:#x}: {}", std::io::Error::last_os_error())));
+            return Err(ioctl_error(req));
         }
         Ok(())
+    }
+}
+
+fn ioctl_error(req: u64) -> Error {
+    let e = std::io::Error::last_os_error();
+    match e.raw_os_error() {
+        // Драйвер без патча 0003 (ENOTTY) или плата не в его списке (EOPNOTSUPP).
+        Some(libc::ENOTTY) | Some(libc::EOPNOTSUPP) => {
+            Error::Unsupported(format!("ioctl {req:#x}: драйвер не поддерживает это для этой модели ({e})"))
+        }
+        _ => Error::Io(format!("ioctl {req:#x}: {e}")),
     }
 }
 
@@ -176,6 +200,26 @@ impl Backend for TuxedoIo {
     fn ec_cpu_temp(&mut self) -> Result<u8> {
         Ok(self.read(R_UW_FAN_TEMP)?.clamp(0, 255) as u8)
     }
+
+    fn charge_limit(&mut self) -> Result<ChargeLimit> {
+        Ok(ChargeLimit {
+            percent: self.read(R_UW_CHARGE_LIMIT)?.clamp(0, 127) as u8,
+            active: self.read(R_UW_CHARGE_LIMIT_ACTIVE)? != 0,
+        })
+    }
+
+    fn set_charge_limit(&mut self, percent: u8) -> Result<()> {
+        self.write(W_UW_CHARGE_LIMIT, percent as i32)
+    }
+
+    fn unlock_charge_limit(&mut self) -> Result<()> {
+        // SAFETY: _IO без аргумента.
+        let rc = unsafe { libc::ioctl(self.dev.as_raw_fd(), W_UW_CHARGE_LIMIT_UNLOCK as _) };
+        if rc < 0 {
+            return Err(ioctl_error(W_UW_CHARGE_LIMIT_UNLOCK));
+        }
+        Ok(())
+    }
 }
 
 // --- эмуляция ----------------------------------------------------------------
@@ -185,13 +229,21 @@ pub struct Mock {
     mode_raw: u8,
     charge: ChargeProfile,
     fn_lock: bool,
+    /// Как на заводе: 0x07B9 пишется, но EC его не соблюдает.
+    limit: ChargeLimit,
     tick: u32,
 }
 
 impl Default for Mock {
     fn default() -> Self {
         // tuxedo_io при загрузке ставит «баланс».
-        Mock { mode_raw: 0x00, charge: ChargeProfile::HighCapacity, fn_lock: false, tick: 0 }
+        Mock {
+            mode_raw: 0x00,
+            charge: ChargeProfile::HighCapacity,
+            fn_lock: false,
+            limit: ChargeLimit { percent: 100, active: false },
+            tick: 0,
+        }
     }
 }
 
@@ -240,6 +292,23 @@ impl Backend for Mock {
     fn ec_cpu_temp(&mut self) -> Result<u8> {
         Ok(48)
     }
+
+    fn charge_limit(&mut self) -> Result<ChargeLimit> {
+        Ok(self.limit)
+    }
+
+    fn set_charge_limit(&mut self, percent: u8) -> Result<()> {
+        if !(1..=100).contains(&percent) {
+            return Err(Error::Io("ioctl: Invalid argument".into()));
+        }
+        self.limit.percent = percent;
+        Ok(())
+    }
+
+    fn unlock_charge_limit(&mut self) -> Result<()> {
+        self.limit.active = true;
+        Ok(())
+    }
 }
 
 /// Записать режим и убедиться, что EC его принял.
@@ -268,6 +337,33 @@ pub fn apply_charge_profile(b: &mut dyn Backend, profile: ChargeProfile) -> Resu
     Ok(())
 }
 
+/// Поставить лимит заряда и, если EC его ещё не соблюдает, включить обходом.
+/// 100 — без лимита: обход не нужен.
+pub fn apply_charge_limit(b: &mut dyn Backend, percent: u8) -> Result<()> {
+    if !(CHARGE_LIMIT_MIN..=CHARGE_LIMIT_MAX).contains(&percent) {
+        return Err(Error::Io(format!(
+            "лимит заряда {percent}%: допустимо от {CHARGE_LIMIT_MIN} до {CHARGE_LIMIT_MAX}"
+        )));
+    }
+    b.set_charge_limit(percent)?;
+    if percent < CHARGE_LIMIT_MAX && !b.charge_limit()?.active {
+        b.unlock_charge_limit()?;
+    }
+    let now = b.charge_limit()?;
+    if now.percent != percent {
+        return Err(Error::NotApplied(format!(
+            "лимит заряда {percent}% не записался: EC сообщает {}%",
+            now.percent
+        )));
+    }
+    if percent < CHARGE_LIMIT_MAX && !now.active {
+        return Err(Error::NotApplied(format!(
+            "лимит заряда {percent}% записан, но EC его не включил (0x0742 бит 2 = 0)"
+        )));
+    }
+    Ok(())
+}
+
 /// Скорость вентилятора в процентах (EC считает от 0 до 200).
 pub fn fan_percent(raw: u8) -> u8 {
     ((raw as u32 * 100 + 100) / 200).min(100) as u8
@@ -282,6 +378,19 @@ mod tests {
         // Сверено с вызовами из Python на ноутбуке (см. docs/HARDWARE.md).
         assert_eq!(R_UW_MODE, 0x8008_ef14);
         assert_eq!(W_UW_PERF_PROF, 0x4008_f018);
+        // _IOR(0xef, 0x40, int32_t*), _IO(0xf0, 0x41).
+        assert_eq!(R_UW_CHARGE_LIMIT, 0x8008_ef40);
+        assert_eq!(W_UW_CHARGE_LIMIT_UNLOCK, 0x0000_f041);
+    }
+
+    #[test]
+    fn charge_limit_unlocks_once() {
+        let mut m = Mock::default();
+        apply_charge_limit(&mut m, 80).unwrap();
+        assert_eq!(m.charge_limit().unwrap(), ChargeLimit { percent: 80, active: true });
+        apply_charge_limit(&mut m, 100).unwrap();
+        assert!(!m.charge_limit().unwrap().effective());
+        assert!(apply_charge_limit(&mut m, 10).is_err());
     }
 
     #[test]

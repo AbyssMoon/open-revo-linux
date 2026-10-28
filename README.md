@@ -18,6 +18,8 @@ laptops on Linux. Rust + Qt 6.*
   Режим сохраняется и восстанавливается после загрузки и сна.
 - **Профиль заряда**: полный заряд, баланс, «всегда от сети» — бережёт батарею, если ноутбук
   почти не отключают от зарядки.
+- **Лимит заряда** 40–100% *(экспериментально)*: зарядка останавливается на выбранном
+  проценте. Прошивка MECHREVO с завода его не соблюдает — Open Revo обходит это.
 - **Fn Lock**.
 - **Мониторинг**: потребление, частота и температура CPU, вентиляторы, заряд и износ батареи.
 - **Значок в трее**: режим и состояние в подсказке, переключение по правому клику.
@@ -111,6 +113,7 @@ sudo mokutil --import /var/lib/dkms/mok.pub
 openrevo status
 openrevo perf office|balanced|turbo
 openrevo charge high_capacity|balanced|stationary
+openrevo limit 80            # лимит заряда, %; off — без лимита
 openrevo fnlock on|off|toggle
 sudo openrevo probe          # без демона, только чтение
 ```
@@ -188,6 +191,9 @@ cargo build -p openrevo-cli && sudo ./target/debug/openrevo probe   # тольк
 - [tuxedo-drivers](https://gitlab.com/tuxedocomputers/development/packages/tuxedo-drivers) — © TUXEDO Computers, GPL v2.
 - Патч проверки производителя — из AUR [mechrevo-drivers-dkms](https://aur.archlinux.org/packages/mechrevo-drivers-dkms).
 - Заводские лимиты режимов WUJIE 15X — из [OpenRevo](https://github.com/faintonce/open-revo) для Windows.
+- Регистры лимита заряда и обход заводской ошибки — [w568w](https://gist.github.com/w568w/957976b59906e0ce5d6c13ad342e1593),
+  карта регистров EC — [mech-forza-control](https://github.com/minortex/mech-forza-control) и
+  [ec_reverse](https://github.com/minortex/ec_reverse) (minortex), разобрано на WUJIE 14XA.
 
 ## Лицензия
 

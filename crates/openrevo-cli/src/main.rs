@@ -2,7 +2,7 @@
 
 use openrevo_core::backend::{fan_percent, Backend, Mock, TuxedoIo};
 use openrevo_core::ipc::{self, Request, Status};
-use openrevo_core::protocol::{ChargeProfile, PerfMode};
+use openrevo_core::protocol::{ChargeLimit, ChargeProfile, PerfMode, CHARGE_LIMIT_MAX, CHARGE_LIMIT_MIN};
 use openrevo_core::sysinfo::SysInfo;
 
 const USAGE: &str = "\
@@ -13,6 +13,7 @@ const USAGE: &str = "\
   perf office|balanced|turbo              режим производительности
   charge high_capacity|balanced|stationary
                                           профиль заряда батареи
+  limit 40..100|off                       лимит заряда, % (off = 100, без лимита)
   fnlock on|off|toggle                    Fn Lock
   reapply                                 повторно применить сохранённые настройки
 
@@ -44,6 +45,16 @@ fn mode_line(raw: Option<u8>) -> String {
     }
 }
 
+fn limit_line(l: ChargeLimit) -> String {
+    if l.effective() {
+        format!("{}%", l.percent)
+    } else if l.percent < CHARGE_LIMIT_MAX {
+        format!("нет (в EC {}%, но EC его не соблюдает)", l.percent)
+    } else {
+        "нет".into()
+    }
+}
+
 fn print_status(s: &Status) {
     let i = &s.sysinfo;
     println!("Бэкенд:          {}", s.backend);
@@ -57,6 +68,9 @@ fn print_status(s: &Status) {
     }
     let charge = s.charge_profile.map_or("—", ChargeProfile::name);
     println!("Профиль заряда:  {charge}");
+    if let Some(l) = s.charge_limit {
+        println!("Лимит заряда:    {}", limit_line(l));
+    }
     println!("Fn Lock:         {}", onoff(s.fn_lock));
     let pct = |v: Option<u8>| v.map_or("—".to_string(), |v| format!("{v}%"));
     println!("Вентиляторы:     {} / {}", pct(s.fan1_pct), pct(s.fan2_pct));
@@ -94,6 +108,15 @@ fn probe(mock: bool) {
     match b.charge_profile() {
         Ok(p) => println!("профиль заряда: {}", p.name()),
         Err(e) => println!("профиль заряда: {e}"),
+    }
+    match b.charge_limit() {
+        Ok(l) => println!(
+            "лимит заряда: 0x07B9 = {}%, 0x0742 бит 2 = {} — {}",
+            l.percent,
+            l.active as u8,
+            limit_line(l)
+        ),
+        Err(e) => println!("лимит заряда: {e}"),
     }
     match b.fn_lock() {
         Ok(v) => println!("fn_lock: {}", onoff(Some(v))),
@@ -140,6 +163,19 @@ fn main() {
             Request::SetChargeProfile {
                 profile: ChargeProfile::from_name(s).unwrap_or_else(|| die(format!("неизвестный профиль: {s}"))),
             }
+        }
+        "limit" => {
+            let s = arg(0).unwrap_or_else(|| die(USAGE));
+            let percent = match s {
+                "off" | "none" => CHARGE_LIMIT_MAX,
+                _ => s
+                    .trim_end_matches('%')
+                    .parse()
+                    .ok()
+                    .filter(|p| (CHARGE_LIMIT_MIN..=CHARGE_LIMIT_MAX).contains(p))
+                    .unwrap_or_else(|| die(format!("лимит заряда — от {CHARGE_LIMIT_MIN} до {CHARGE_LIMIT_MAX} или off"))),
+            };
+            Request::SetChargeLimit { percent }
         }
         "fnlock" => Request::SetFnLock {
             enabled: match arg(0) {

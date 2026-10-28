@@ -111,4 +111,10 @@
 
 #define W_UW_PERF_PROF		_IOW(MAGIC_WRITE_UW, 0x18, int32_t*)
 
+// Open Revo: charge limit on MECHREVO (EC 0x07B9, enforced when 0x0742 bit 2 is set)
+#define R_UW_CHARGE_LIMIT		_IOR(MAGIC_READ_UW, 0x40, int32_t*)
+#define R_UW_CHARGE_LIMIT_ACTIVE	_IOR(MAGIC_READ_UW, 0x41, int32_t*)
+#define W_UW_CHARGE_LIMIT		_IOW(MAGIC_WRITE_UW, 0x40, int32_t*)
+#define W_UW_CHARGE_LIMIT_UNLOCK	_IO(MAGIC_WRITE_UW, 0x41)
+
 #endif

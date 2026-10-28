@@ -524,12 +524,106 @@ static u32 uw_set_performance_profile_v1(enum uw_perf_profiles_v1 profile)
 	return result;
 }
 
+/*
+ * Open Revo: charge limit on MECHREVO boards (TongFang GXxHRXx, EC 2.12).
+ *
+ * 0x07B9 bits 0-6 hold the limit in percent, 0x0742 bit 2 is set while the EC
+ * enforces it. The EC enforces the limit only if 0x07C3 or 0x0770 equals 4 or
+ * 5, or if its stored copy of the limit (0x087F, not host accessible) is
+ * valid. MECHREVO ships an invalid stored limit, so writes to 0x07B9 are
+ * ignored. Setting 0x07C3 to 4 for about two seconds makes the EC enable the
+ * limit and save 0x07B9 as the stored limit; afterwards 0x07B9 works directly.
+ * See https://gist.github.com/w568w/957976b59906e0ce5d6c13ad342e1593
+ */
+#define UW_EC_CHARGE_LIMIT		0x07b9
+#define UW_EC_CHARGE_LIMIT_MASK		0x7f
+#define UW_EC_CHARGE_GATE		0x0742
+#define UW_EC_CHARGE_GATE_BIT		0x04
+#define UW_EC_CHARGE_STATE		0x07c3
+#define UW_EC_CHARGE_STATE2		0x0770
+#define UW_EC_CHARGE_STATE_LIMIT	0x04
+
+static bool uw_has_mechrevo_charge_limit(void)
+{
+	return dmi_match(DMI_BOARD_NAME, "WUJIE15-GX5HRXG");
+}
+
+static bool uw_charge_state_enables_limit(u8 state)
+{
+	return state == 0x04 || state == 0x05;
+}
+
+static int uw_charge_limit_get(u32 *limit)
+{
+	u8 data;
+	int status = uniwill_read_ec_ram(UW_EC_CHARGE_LIMIT, &data);
+	if (status < 0)
+		return status;
+	*limit = data & UW_EC_CHARGE_LIMIT_MASK;
+	return 0;
+}
+
+static int uw_charge_limit_active(u32 *active)
+{
+	u8 data;
+	int status = uniwill_read_ec_ram(UW_EC_CHARGE_GATE, &data);
+	if (status < 0)
+		return status;
+	*active = (data & UW_EC_CHARGE_GATE_BIT) ? 1 : 0;
+	return 0;
+}
+
+static int uw_charge_limit_set(u32 limit)
+{
+	u8 data;
+	int status;
+	if (limit < 1 || limit > 100)
+		return -EINVAL;
+	status = uniwill_read_ec_ram(UW_EC_CHARGE_LIMIT, &data);
+	if (status < 0)
+		return status;
+	return uniwill_write_ec_ram(UW_EC_CHARGE_LIMIT, (data & ~UW_EC_CHARGE_LIMIT_MASK) | limit);
+}
+
+static int uw_charge_limit_unlock(void)
+{
+	u8 gate, state, state2, now;
+	int status;
+
+	status = uniwill_read_ec_ram(UW_EC_CHARGE_GATE, &gate);
+	if (status < 0)
+		return status;
+	if (gate & UW_EC_CHARGE_GATE_BIT)
+		return 0;
+	status = uniwill_read_ec_ram(UW_EC_CHARGE_STATE, &state);
+	if (status < 0)
+		return status;
+	status = uniwill_read_ec_ram(UW_EC_CHARGE_STATE2, &state2);
+	if (status < 0)
+		return status;
+	// The EC already takes the limit from 0x07B9; nothing to work around.
+	if (uw_charge_state_enables_limit(state) || uw_charge_state_enables_limit(state2))
+		return 0;
+
+	status = uniwill_write_ec_ram(UW_EC_CHARGE_STATE, UW_EC_CHARGE_STATE_LIMIT);
+	if (status < 0)
+		return status;
+	// The EC checks the state once per second.
+	msleep(2000);
+	// Restore only our own value: the EC may have changed the state meanwhile.
+	status = uniwill_read_ec_ram(UW_EC_CHARGE_STATE, &now);
+	if (status >= 0 && now == UW_EC_CHARGE_STATE_LIMIT)
+		status = uniwill_write_ec_ram(UW_EC_CHARGE_STATE, state);
+	return status < 0 ? status : 0;
+}
+
 static long uniwill_ioctl_interface(struct file *file, unsigned int cmd, unsigned long arg)
 {
 	u32 result = 0;
 	u32 copy_result;
 	u32 argument;
 	u8 byte_data;
+	int status;
 	const char str_no_if[] = "";
 	char *str_uniwill_if;
 
@@ -656,6 +750,19 @@ static long uniwill_ioctl_interface(struct file *file, unsigned int cmd, unsigne
 				result = 3;
 			copy_result = copy_to_user((void *) arg, &result, sizeof(result));
 			break;
+		case R_UW_CHARGE_LIMIT:
+		case R_UW_CHARGE_LIMIT_ACTIVE:
+			if (!uw_has_mechrevo_charge_limit())
+				return -EOPNOTSUPP;
+			if (cmd == R_UW_CHARGE_LIMIT)
+				status = uw_charge_limit_get(&result);
+			else
+				status = uw_charge_limit_active(&result);
+			if (status < 0)
+				return status;
+			if (copy_to_user((void *) arg, &result, sizeof(result)))
+				return -EFAULT;
+			break;
 #ifdef DEBUG
 		case R_TF_BC:
 			copy_result = copy_from_user(&uw_arg, (void *) arg, sizeof(uw_arg));
@@ -711,6 +818,22 @@ static long uniwill_ioctl_interface(struct file *file, unsigned int cmd, unsigne
 		case W_UW_PERF_PROF:
 			copy_result = copy_from_user(&argument, (int32_t *) arg, sizeof(argument));
 			uw_set_performance_profile_v1(argument);
+			break;
+		case W_UW_CHARGE_LIMIT:
+			if (!uw_has_mechrevo_charge_limit())
+				return -EOPNOTSUPP;
+			if (copy_from_user(&argument, (int32_t *) arg, sizeof(argument)))
+				return -EFAULT;
+			status = uw_charge_limit_set(argument);
+			if (status < 0)
+				return status;
+			break;
+		case W_UW_CHARGE_LIMIT_UNLOCK:
+			if (!uw_has_mechrevo_charge_limit())
+				return -EOPNOTSUPP;
+			status = uw_charge_limit_unlock();
+			if (status < 0)
+				return status;
 			break;
 #ifdef DEBUG
 		case W_TF_BC:
