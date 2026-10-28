@@ -28,17 +28,20 @@ jobs:
       - name: Тесты
         run: cargo test --workspace --locked
 
-      - name: Драйвер собирается (ядро раннера Ubuntu)
+      - name: Драйвер собирается (ядро Ubuntu generic)
+        # Не под ядро раннера: облачное azure собрано без ACPI-батареи и
+        # многоцветных LED, на нём tuxedo_keyboard не линкуется.
         run: |
           set -o pipefail
-          sudo apt-get install -y linux-headers-$(uname -r)
-          # Ядро раннера может быть собрано не тем gcc, что стоит по умолчанию.
+          sudo apt-get install -y linux-headers-generic
+          kver=$(ls /usr/src | sed -n 's/^linux-headers-\(.*-generic\)$/\1/p' | sort -V | tail -1)
+          # Ядро может быть собрано не тем gcc, что стоит по умолчанию.
           cc=$(sed -n 's/^CONFIG_CC_VERSION_TEXT="\(x86_64-linux-gnu-\)\?\(gcc-[0-9]*\).*/\2/p' \
-              /lib/modules/$(uname -r)/build/.config)
-          echo "ядро $(uname -r), компилятор ядра: ${cc:-?}"
+              /usr/src/linux-headers-$kver/.config)
+          echo "ядро $kver, компилятор ядра: ${cc:-?}"
           [ -z "$cc" ] || command -v "$cc" >/dev/null || sudo apt-get install -y "$cc"
           # Хвост лога — в аннотацию: её видно без входа в GitHub.
-          ./scripts/build-driver.sh 2>&1 | tee driver.log || {
+          ./scripts/build-driver.sh "$kver" 2>&1 | tee driver.log || {
               echo "::error title=Сборка драйвера::$(grep -v '^ *\(CC\|LD\|BTF\|MODPOST\)' driver.log | tail -15 | sed ':a;N;$!ba;s/%/%25/g;s/\n/%0A/g')"
               exit 1
           }
