@@ -184,6 +184,7 @@ cargo build -p openrevo-cli && sudo ./target/debug/openrevo probe   # тольк
 
 - [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) — архитектура, IPC, отладка, драйвер, релиз.
 - [docs/HARDWARE.md](docs/HARDWARE.md) — драйвер, регистры EC, замеры, открытые вопросы.
+- [docs/RESEARCH.md](docs/RESEARCH.md) — чужие исследования той же платформы (WUJIE 14XA): что нашли и что можно взять.
 - [CONTRIBUTING.md](CONTRIBUTING.md) — как проверить свою модель и прислать данные.
 
 ## Благодарности
