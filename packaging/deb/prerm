@@ -1,0 +1,10 @@
+#!/bin/sh
+set -e
+DRV_VER=@DRV_VER@
+
+if [ "$1" = remove ]; then
+    if [ -d /run/systemd/system ]; then
+        systemctl disable --now openrevod.service || true
+    fi
+    /opt/openrevo/libexec/dkms-setup.sh remove "$DRV_VER"
+fi

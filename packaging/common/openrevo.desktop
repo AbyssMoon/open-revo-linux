@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Open Revo
+Comment=Performance modes and battery charging profile for MECHREVO laptops
+Comment[ru]=Режимы производительности и профиль заряда ноутбуков MECHREVO
+Exec=openrevo-gui
+Icon=openrevo
+Terminal=false
+Categories=System;Settings;HardwareSettings;
+Keywords=mechrevo;tongfang;uniwill;battery;fan;performance;

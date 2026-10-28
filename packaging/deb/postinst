@@ -1,0 +1,16 @@
+#!/bin/sh
+set -e
+DRV_VER=@DRV_VER@
+
+if [ "$1" = configure ]; then
+    /opt/openrevo/libexec/dkms-setup.sh install "$DRV_VER"
+
+    if [ -d /run/systemd/system ]; then
+        systemctl daemon-reload || true
+        if [ -z "$2" ]; then
+            systemctl enable --now openrevod.service || true
+        else
+            systemctl try-restart openrevod.service || true
+        fi
+    fi
+fi

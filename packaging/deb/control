@@ -1,0 +1,15 @@
+Package: openrevo
+Version: @VERSION@
+Architecture: amd64
+Maintainer: AbyssMoon <7919805+AbyssMoon@users.noreply.github.com>
+Installed-Size: @SIZE@
+Depends: dkms, linux-headers-generic | linux-headers-amd64 | linux-headers, libc6 (>= 2.39), libstdc++6, libgcc-s1, zlib1g, libzstd1, libglib2.0-0t64 | libglib2.0-0, libdbus-1-3, libgssapi-krb5-2, libfontconfig1, libfreetype6, libgl1, libegl1, libx11-6, libx11-xcb1, libxcb1, libxcb-cursor0, libxcb-glx0, libxcb-icccm4, libxcb-image0, libxcb-keysyms1, libxcb-randr0, libxcb-render0, libxcb-render-util0, libxcb-shape0, libxcb-shm0, libxcb-sync1, libxcb-xfixes0, libxcb-xkb1, libxkbcommon0, libxkbcommon-x11-0, libwayland-client0, libwayland-cursor0, libwayland-egl1
+Conflicts: tuxedo-drivers
+Section: utils
+Priority: optional
+Homepage: https://github.com/AbyssMoon/open-revo-linux
+Description: Performance modes and charging profile for MECHREVO (Uniwill) laptops
+ Performance modes (office / balanced / turbo), battery charging profile and
+ Fn Lock on MECHREVO laptops built on the Uniwill / TongFang platform.
+ Includes the openrevod daemon (systemd), the tray GUI started at login, the
+ openrevo CLI and tuxedo-drivers with MECHREVO patches built by DKMS.

@@ -1,0 +1,12 @@
+[package]
+name = "openrevo-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "openrevo"
+path = "src/main.rs"
+
+[dependencies]
+openrevo-core.workspace = true

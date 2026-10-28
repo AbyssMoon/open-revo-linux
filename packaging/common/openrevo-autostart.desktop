@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Open Revo
+Comment=Open Revo tray icon
+Exec=openrevo-gui --tray
+Icon=openrevo
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true

@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Системные зависимости
+        run: sudo apt-get update && sudo apt-get install -y libgl1-mesa-dev libxkbcommon-dev
+
+      - name: Qt 6.8.3
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.8.3"
+          cache: true
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Сборка
+        run: cargo build --workspace --locked
+
+      - name: Тесты
+        run: cargo test --workspace --locked
+
+      - name: Драйвер собирается (ядро раннера Ubuntu)
+        run: |
+          sudo apt-get install -y linux-headers-$(uname -r)
+          ./scripts/build-driver.sh
+
+  driver-fedora:
+    # Ядро Fedora новее, чем у Ubuntu LTS: ловим поломки API ядра заранее.
+    runs-on: ubuntu-24.04
+    container: fedora:44
+    steps:
+      - name: Заголовки ядра и инструменты
+        # git — до checkout, иначе он скачает архив без .git и git diff ниже не сработает.
+        run: |
+          dnf install -y --setopt=install_weak_deps=False \
+              kernel-devel gcc make elfutils-libelf-devel findutils patch git curl
+
+      - uses: actions/checkout@v4
+
+      - name: Драйвер собирается
+        run: ./scripts/build-driver.sh "$(ls /usr/src/kernels | sort -V | tail -1)"
+
+      - name: Патчи ложатся на исходники TUXEDO
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          ./scripts/update-driver.sh
+          git diff --exit-code -- third_party/tuxedo-drivers

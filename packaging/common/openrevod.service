@@ -1,0 +1,15 @@
+[Unit]
+Description=Open Revo daemon (MECHREVO / Uniwill firmware)
+After=systemd-modules-load.service
+
+[Service]
+# Модули грузятся и через modules-load.d; здесь — на случай, если DKMS
+# собрал их уже после старта (первая установка, новое ядро).
+ExecStartPre=-/usr/sbin/modprobe -a tuxedo_keyboard uniwill_wmi tuxedo_io
+ExecStart=/opt/openrevo/bin/openrevod
+StateDirectory=openrevo
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
