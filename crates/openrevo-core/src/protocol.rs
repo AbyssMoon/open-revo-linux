@@ -11,6 +11,11 @@ use serde::{Deserialize, Serialize};
 /// максимум») к режиму не относятся.
 pub const PERF_MODE_MASK: u8 = 0xb0;
 
+/// «Вентиляторы на максимум» в `0x0751`: EC крутит оба на 200/200 и не
+/// смотрит на температуру. Смена режима бит не трогает, загрузка tuxedo_io
+/// обнуляет весь регистр.
+pub const FAN_MAX_BIT: u8 = 0x40;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PerfMode {
@@ -100,6 +105,21 @@ impl ChargeProfile {
             _ => None,
         }
     }
+
+    /// До скольких процентов заряжать, если драйвер умеет лимит заряда: тогда
+    /// профиль — это лимит, а прошивочный профиль остаётся `high_capacity`.
+    pub fn limit_percent(self) -> u8 {
+        match self {
+            ChargeProfile::HighCapacity => CHARGE_LIMIT_MAX,
+            ChargeProfile::Balanced => 80,
+            ChargeProfile::Stationary => 60,
+        }
+    }
+
+    /// Профиль по лимиту; `None` — лимит задан вручную (`openrevo limit`).
+    pub fn from_limit(percent: u8) -> Option<Self> {
+        Self::ALL.into_iter().find(|p| p.limit_percent() == percent)
+    }
 }
 
 /// Лимит заряда, % (`0x07B9`). 100 — без лимита.
@@ -119,6 +139,51 @@ impl ChargeLimit {
     pub fn effective(self) -> bool {
         self.active && self.percent < CHARGE_LIMIT_MAX
     }
+
+    /// До скольких процентов батарея зарядится на самом деле: 100, если EC
+    /// лимит не соблюдает или он не задан (0 на заводе).
+    pub fn effective_percent(self) -> u8 {
+        if self.effective() && self.percent > 0 {
+            self.percent
+        } else {
+            CHARGE_LIMIT_MAX
+        }
+    }
+}
+
+/// Подсветка клавиатуры (`/sys/class/leds/*:kbd_backlight`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KbdBacklight {
+    /// 0 — выключена.
+    pub brightness: u8,
+    pub max_brightness: u8,
+    /// Цвет, если подсветка RGB; `None` — одноцветная.
+    pub color: Option<[u8; 3]>,
+}
+
+/// Готовые цвета подсветки: название и RGB.
+pub const KBD_COLORS: [(&str, [u8; 3]); 8] = [
+    ("white", [255, 255, 255]),
+    ("red", [255, 0, 0]),
+    ("orange", [255, 96, 0]),
+    ("yellow", [255, 200, 0]),
+    ("green", [0, 255, 0]),
+    ("cyan", [0, 255, 255]),
+    ("blue", [0, 0, 255]),
+    ("purple", [160, 0, 255]),
+];
+
+/// Цвет по названию из [`KBD_COLORS`] или `RRGGBB` / `#RRGGBB`.
+pub fn parse_kbd_color(s: &str) -> Option<[u8; 3]> {
+    if let Some((_, c)) = KBD_COLORS.iter().find(|(n, _)| *n == s) {
+        return Some(*c);
+    }
+    let hex = s.strip_prefix('#').unwrap_or(s);
+    if hex.len() != 6 || !hex.is_ascii() {
+        return None;
+    }
+    let ch = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok();
+    Some([ch(0)?, ch(2)?, ch(4)?])
 }
 
 #[cfg(test)]
@@ -143,6 +208,25 @@ mod tests {
         }
         for p in ChargeProfile::ALL {
             assert_eq!(ChargeProfile::from_name(p.name()), Some(p));
+            assert_eq!(ChargeProfile::from_limit(p.limit_percent()), Some(p));
         }
+    }
+
+    #[test]
+    fn kbd_colors() {
+        assert_eq!(parse_kbd_color("red"), Some([255, 0, 0]));
+        assert_eq!(parse_kbd_color("#00ff80"), Some([0, 255, 128]));
+        assert_eq!(parse_kbd_color("00FF80"), Some([0, 255, 128]));
+        assert_eq!(parse_kbd_color("12345"), None);
+        assert_eq!(parse_kbd_color("гг0000"), None);
+    }
+
+    #[test]
+    fn effective_limit() {
+        // Завод: 0x07B9 = 0, EC лимит не соблюдает.
+        assert_eq!(ChargeLimit { percent: 0, active: false }.effective_percent(), 100);
+        assert_eq!(ChargeLimit { percent: 60, active: false }.effective_percent(), 100);
+        assert_eq!(ChargeLimit { percent: 60, active: true }.effective_percent(), 60);
+        assert_eq!(ChargeProfile::from_limit(70), None);
     }
 }

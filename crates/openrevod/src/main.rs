@@ -30,16 +30,33 @@ const WATCH_INTERVAL: Duration = Duration::from_secs(2);
 struct Saved {
     #[serde(default)]
     perf_mode: Option<PerfMode>,
+    /// Прошивочный профиль (`charging_profile`). Если драйвер умеет лимит,
+    /// профиль из интерфейса — это лимит, а здесь `high_capacity`.
     #[serde(default)]
     charge_profile: Option<ChargeProfile>,
     /// Только то, что поставил пользователь: заводское значение не трогаем.
     #[serde(default)]
     charge_limit: Option<u8>,
+    /// Подсветка клавиатуры: tuxedo_keyboard при загрузке её гасит. Яркость
+    /// запоминаем и ту, что поставили клавишей Fn.
+    #[serde(default)]
+    kbd_brightness: Option<u8>,
+    #[serde(default)]
+    kbd_color: Option<[u8; 3]>,
+    #[serde(default)]
+    usb_powershare: Option<bool>,
+    #[serde(default)]
+    ac_auto_boot: Option<bool>,
 }
 
 struct Daemon {
     backend: Box<dyn Backend>,
     profiles_available: i32,
+    /// Драйвер умеет лимит заряда (патч 0003, плата в списке).
+    has_limit: bool,
+    /// Вентиляторы на максимум. Не сохраняется: после перезапуска демона и
+    /// перезагрузки — снова авто, а после сна включается обратно.
+    fan_max: bool,
     saved: Saved,
     state_path: PathBuf,
     sysinfo: SysInfo,
@@ -47,6 +64,8 @@ struct Daemon {
     /// Режим, который демон видел в EC последним, — чтобы отличить смену
     /// клавишей от своей записи.
     last_mode: Option<PerfMode>,
+    /// То же для яркости подсветки.
+    last_kbd: Option<u8>,
 }
 
 impl Daemon {
@@ -93,7 +112,76 @@ impl Daemon {
                 }
             }
         }
+        let kbd = self.backend.kbd_backlight().ok();
+        if let (Some(c), Some(k)) = (self.saved.kbd_color, kbd) {
+            if k.color.is_some_and(|now| now != c) {
+                if let Err(e) = self.backend.set_kbd_color(c) {
+                    log(&format!("цвет подсветки не восстановлен ({reason}): {e}"));
+                }
+            }
+        }
+        if let (Some(b), Some(k)) = (self.saved.kbd_brightness, kbd) {
+            if k.brightness != b {
+                match self.backend.set_kbd_brightness(b) {
+                    Ok(()) => log(&format!("подсветка {b}/{} восстановлена ({reason})", k.max_brightness)),
+                    Err(e) => log(&format!("подсветка не восстановлена ({reason}): {e}")),
+                }
+            }
+        }
+        self.last_kbd = self.backend.kbd_backlight().ok().map(|k| k.brightness);
+        if let Some(v) = self.saved.usb_powershare {
+            if self.backend.usb_powershare().ok() == Some(!v) {
+                if let Err(e) = self.backend.set_usb_powershare(v) {
+                    log(&format!("USB у выключенного ноутбука не восстановлено ({reason}): {e}"));
+                }
+            }
+        }
+        if let Some(v) = self.saved.ac_auto_boot {
+            if self.backend.ac_auto_boot().ok() == Some(!v) {
+                if let Err(e) = self.backend.set_ac_auto_boot(v) {
+                    log(&format!("включение от зарядки не восстановлено ({reason}): {e}"));
+                }
+            }
+        }
+        if self.fan_max && self.backend.fan_max().ok() == Some(false) {
+            match backend::apply_fan_max(self.backend.as_mut(), true) {
+                Ok(()) => log(&format!("вентиляторы на максимум восстановлены ({reason})")),
+                Err(e) => log(&format!("вентиляторы на максимум не восстановлены ({reason}): {e}")),
+            }
+        }
         self.last_mode = self.current_mode();
+    }
+
+    /// Лимит заряда; прошивочный профиль при этом — `high_capacity`: щадящие
+    /// профили прошивки урезают ёмкость, которую батарея считает полной, и
+    /// вместе с лимитом батарея недозаряжалась бы вдвойне.
+    fn set_charge_limit(&mut self, percent: u8) -> backend::Result<()> {
+        if self.backend.charge_profile().ok() != Some(ChargeProfile::HighCapacity) {
+            backend::apply_charge_profile(self.backend.as_mut(), ChargeProfile::HighCapacity)?;
+        }
+        self.saved.charge_profile = Some(ChargeProfile::HighCapacity);
+        backend::apply_charge_limit(self.backend.as_mut(), percent)?;
+        self.saved.charge_limit = Some(percent);
+        self.save();
+        Ok(())
+    }
+
+    /// Состояние от прошлых версий: профиль без лимита. Переводим в лимит;
+    /// `true` — состояние поменялось, его надо применить.
+    fn migrate_charge_profile(&mut self) -> bool {
+        if !self.has_limit || self.saved.charge_limit.is_some() {
+            return false;
+        }
+        match self.saved.charge_profile {
+            Some(p) if p != ChargeProfile::HighCapacity => {
+                log(&format!("профиль заряда «{}» теперь задаётся лимитом {}%", p.name(), p.limit_percent()));
+                self.saved.charge_profile = Some(ChargeProfile::HighCapacity);
+                self.saved.charge_limit = Some(p.limit_percent());
+                self.save();
+                true
+            }
+            _ => false,
+        }
     }
 
     fn status(&mut self) -> Status {
@@ -102,7 +190,7 @@ impl Daemon {
         }
         let mut errors = Vec::new();
         let perf_mode_raw = ok(&mut errors, self.backend.perf_mode_raw(), "режим");
-        let charge_profile = ok(&mut errors, self.backend.charge_profile(), "профиль заряда");
+        let fw_profile = ok(&mut errors, self.backend.charge_profile(), "профиль заряда");
         let charge_limit = match self.backend.charge_limit() {
             Ok(l) => Some(l),
             // Нет патча 0003 или модель не та — просто не показываем.
@@ -112,6 +200,16 @@ impl Daemon {
                 None
             }
         };
+        let charge_profile = if self.has_limit {
+            charge_limit.and_then(|l| ChargeProfile::from_limit(l.effective_percent()))
+        } else {
+            fw_profile
+        };
+        let fan_max = self.backend.fan_max().ok();
+        // Есть не на всех моделях — ошибку не показываем.
+        let kbd_backlight = self.backend.kbd_backlight().ok();
+        let usb_powershare = self.backend.usb_powershare().ok();
+        let ac_auto_boot = self.backend.ac_auto_boot().ok();
         // Есть не на всех моделях — ошибку не показываем.
         let fn_lock = self.backend.fn_lock().ok();
         let fan1_pct = self.backend.fan_raw(0).ok().map(fan_percent);
@@ -133,6 +231,10 @@ impl Daemon {
             fn_lock,
             fan1_pct,
             fan2_pct,
+            fan_max,
+            kbd_backlight,
+            usb_powershare,
+            ac_auto_boot,
             ec_cpu_temp,
             cpu_power_w: self.cpu_power_w,
             errors,
@@ -149,6 +251,11 @@ impl Daemon {
                 self.saved.perf_mode = Some(mode);
                 self.save();
             }),
+            Request::SetChargeProfile { profile } if self.has_limit => {
+                let percent = profile.limit_percent();
+                self.set_charge_limit(percent)
+                    .map(|()| log(&format!("профиль заряда «{}»: лимит {percent}%", profile.name())))
+            }
             Request::SetChargeProfile { profile } => {
                 backend::apply_charge_profile(self.backend.as_mut(), profile).map(|()| {
                     log(&format!("профиль заряда «{}»", profile.name()));
@@ -157,13 +264,34 @@ impl Daemon {
                 })
             }
             Request::SetChargeLimit { percent } => {
-                backend::apply_charge_limit(self.backend.as_mut(), percent).map(|()| {
-                    log(&format!("лимит заряда {percent}%"));
-                    self.saved.charge_limit = Some(percent);
+                self.set_charge_limit(percent).map(|()| log(&format!("лимит заряда {percent}%")))
+            }
+            Request::SetFnLock { enabled } => self.backend.set_fn_lock(enabled),
+            Request::SetFanMax { enabled } => backend::apply_fan_max(self.backend.as_mut(), enabled).map(|()| {
+                log(&format!("вентиляторы на максимум: {}", if enabled { "вкл" } else { "выкл" }));
+                self.fan_max = enabled;
+            }),
+            Request::SetKbdBrightness { brightness } => {
+                self.backend.set_kbd_brightness(brightness).map(|()| {
+                    self.last_kbd = Some(brightness);
+                    self.saved.kbd_brightness = Some(brightness);
                     self.save();
                 })
             }
-            Request::SetFnLock { enabled } => self.backend.set_fn_lock(enabled),
+            Request::SetKbdColor { color } => self.backend.set_kbd_color(color).map(|()| {
+                self.saved.kbd_color = Some(color);
+                self.save();
+            }),
+            Request::SetUsbPowershare { enabled } => self.backend.set_usb_powershare(enabled).map(|()| {
+                log(&format!("USB у выключенного ноутбука: {}", if enabled { "вкл" } else { "выкл" }));
+                self.saved.usb_powershare = Some(enabled);
+                self.save();
+            }),
+            Request::SetAcAutoBoot { enabled } => self.backend.set_ac_auto_boot(enabled).map(|()| {
+                log(&format!("включение от зарядки: {}", if enabled { "вкл" } else { "выкл" }));
+                self.saved.ac_auto_boot = Some(enabled);
+                self.save();
+            }),
             Request::Reapply => {
                 self.reapply("по запросу");
                 Ok(())
@@ -256,6 +384,15 @@ fn watcher(daemon: Arc<Mutex<Daemon>>) {
             d.saved.perf_mode = Some(m);
             d.save();
         }
+        // Яркость, поставленную клавишей Fn, тоже вернём после загрузки.
+        let last_kbd = d.last_kbd;
+        if let Some(b) = d.backend.kbd_backlight().ok().map(|k| k.brightness).filter(|&b| Some(b) != last_kbd) {
+            d.last_kbd = Some(b);
+            if last_kbd.is_some() {
+                d.saved.kbd_brightness = Some(b);
+                d.save();
+            }
+        }
     }
 }
 
@@ -289,7 +426,7 @@ fn main() {
         }
     }
 
-    let (backend, profiles_available): (Box<dyn Backend>, i32) = if mock {
+    let (mut backend, profiles_available): (Box<dyn Backend>, i32) = if mock {
         (Box::new(Mock::default()), 3)
     } else {
         let b = open_driver().unwrap_or_else(|e| {
@@ -306,14 +443,18 @@ fn main() {
         .and_then(|s| serde_json::from_str(&s).ok());
     let first_run = saved.is_none();
 
+    let has_limit = !matches!(backend.charge_limit(), Err(backend::Error::Unsupported(_)));
     let mut daemon = Daemon {
         backend,
         profiles_available,
+        has_limit,
+        fan_max: false,
         saved: saved.unwrap_or_default(),
         state_path,
         sysinfo: SysInfo::read(),
         cpu_power_w: None,
         last_mode: None,
+        last_kbd: None,
     };
     log(&format!("бэкенд: {}", daemon.backend.describe()));
     if !mock && !daemon.sysinfo.is_mechrevo() {
@@ -330,7 +471,8 @@ fn main() {
         daemon.save();
         daemon.last_mode = daemon.current_mode();
         log("первый запуск: настройки взяты из прошивки");
-    } else {
+    }
+    if daemon.migrate_charge_profile() || !first_run {
         daemon.reapply("запуск");
     }
 

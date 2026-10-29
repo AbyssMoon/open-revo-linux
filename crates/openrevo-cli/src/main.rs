@@ -2,7 +2,9 @@
 
 use openrevo_core::backend::{fan_percent, Backend, Mock, TuxedoIo};
 use openrevo_core::ipc::{self, Request, Status};
-use openrevo_core::protocol::{ChargeLimit, ChargeProfile, PerfMode, CHARGE_LIMIT_MAX, CHARGE_LIMIT_MIN};
+use openrevo_core::protocol::{
+    parse_kbd_color, ChargeLimit, ChargeProfile, PerfMode, CHARGE_LIMIT_MAX, CHARGE_LIMIT_MIN, KBD_COLORS,
+};
 use openrevo_core::sysinfo::SysInfo;
 
 const USAGE: &str = "\
@@ -12,9 +14,15 @@ const USAGE: &str = "\
   status                                  текущее состояние
   perf office|balanced|turbo              режим производительности
   charge high_capacity|balanced|stationary
-                                          профиль заряда батареи
-  limit 40..100|off                       лимит заряда, % (off = 100, без лимита)
+                                          профиль заряда: до 100, 80 или 60%
+  limit 40..100|off                       свой лимит заряда, % (off = 100, без лимита)
+  fanmax on|off|toggle                    вентиляторы на максимум
   fnlock on|off|toggle                    Fn Lock
+  kbd off|on|toggle|0..N                  подсветка клавиатуры (N — макс. яркость)
+  kbd color НАЗВАНИЕ|RRGGBB               цвет подсветки: white, red, orange, yellow,
+                                          green, cyan, blue, purple или свой
+  usbcharge on|off                        питание USB у выключенного ноутбука
+  acboot on|off                           включаться при подключении зарядки
   reapply                                 повторно применить сохранённые настройки
 
 напрямую через /dev/tuxedo_io (нужен root, демон не нужен, только чтение):
@@ -48,7 +56,7 @@ fn mode_line(raw: Option<u8>) -> String {
 fn limit_line(l: ChargeLimit) -> String {
     if l.effective() {
         format!("{}%", l.percent)
-    } else if l.percent < CHARGE_LIMIT_MAX {
+    } else if l.percent > 0 && l.percent < CHARGE_LIMIT_MAX {
         format!("нет (в EC {}%, но EC его не соблюдает)", l.percent)
     } else {
         "нет".into()
@@ -66,14 +74,30 @@ fn print_status(s: &Status) {
             println!("                 от сети CPU до {pl1} Вт, кратковременно {pl2} Вт");
         }
     }
-    let charge = s.charge_profile.map_or("—", ChargeProfile::name);
+    let charge = match (s.charge_profile, s.charge_limit) {
+        (Some(p), _) => p.name(),
+        (None, Some(_)) => "свой лимит",
+        (None, None) => "—",
+    };
     println!("Профиль заряда:  {charge}");
     if let Some(l) = s.charge_limit {
         println!("Лимит заряда:    {}", limit_line(l));
     }
     println!("Fn Lock:         {}", onoff(s.fn_lock));
+    if let Some(k) = s.kbd_backlight {
+        let color = k.color.map_or(String::new(), |[r, g, b]| format!(", цвет #{r:02x}{g:02x}{b:02x}"));
+        let level = if k.brightness == 0 { "выкл".to_string() } else { format!("{}/{}", k.brightness, k.max_brightness) };
+        println!("Подсветка:       {level}{color}");
+    }
+    if s.usb_powershare.is_some() {
+        println!("USB выключенного: {}", onoff(s.usb_powershare));
+    }
+    if s.ac_auto_boot.is_some() {
+        println!("Вкл. от зарядки: {}", onoff(s.ac_auto_boot));
+    }
     let pct = |v: Option<u8>| v.map_or("—".to_string(), |v| format!("{v}%"));
-    println!("Вентиляторы:     {} / {}", pct(s.fan1_pct), pct(s.fan2_pct));
+    let max = if s.fan_max == Some(true) { " (на максимуме)" } else { "" };
+    println!("Вентиляторы:     {} / {}{max}", pct(s.fan1_pct), pct(s.fan2_pct));
     if let Some(t) = s.ec_cpu_temp {
         println!("Температура EC:  {t} °C");
     }
@@ -188,6 +212,61 @@ fn main() {
                 _ => die(USAGE),
             },
         },
+        "fanmax" => Request::SetFanMax {
+            enabled: match arg(0) {
+                Some("on") => true,
+                Some("off") => false,
+                Some("toggle") => match ipc::request(&Request::Status) {
+                    Ok(s) => !s.fan_max.unwrap_or_else(|| die("нет связи с EC")),
+                    Err(e) => die(e),
+                },
+                _ => die(USAGE),
+            },
+        },
+        "kbd" => {
+            let status = || ipc::request(&Request::Status).unwrap_or_else(|e| die(e));
+            let kbd = || status().kbd_backlight.unwrap_or_else(|| die("подсветка клавиатуры не найдена"));
+            match arg(0) {
+                Some("color") => {
+                    let s = arg(1).unwrap_or_else(|| die(USAGE));
+                    let color = parse_kbd_color(s).unwrap_or_else(|| {
+                        let names: Vec<&str> = KBD_COLORS.iter().map(|(n, _)| *n).collect();
+                        die(format!("цвет — {} или RRGGBB", names.join(", ")))
+                    });
+                    Request::SetKbdColor { color }
+                }
+                Some("off") => Request::SetKbdBrightness { brightness: 0 },
+                // «Включить» — на половину яркости.
+                Some("on") => Request::SetKbdBrightness { brightness: kbd().max_brightness.div_ceil(2) },
+                Some("toggle") => {
+                    let k = kbd();
+                    let brightness = if k.brightness > 0 { 0 } else { k.max_brightness.div_ceil(2) };
+                    Request::SetKbdBrightness { brightness }
+                }
+                Some(n) => {
+                    let max = kbd().max_brightness;
+                    let brightness = n
+                        .parse()
+                        .ok()
+                        .filter(|b| *b <= max)
+                        .unwrap_or_else(|| die(format!("яркость — от 0 до {max}, off, on или toggle")));
+                    Request::SetKbdBrightness { brightness }
+                }
+                None => die(USAGE),
+            }
+        }
+        "usbcharge" | "acboot" => {
+            let enabled = match arg(0) {
+                Some("on") => true,
+                Some("off") => false,
+                _ => die(USAGE),
+            };
+            if cmd == "usbcharge" {
+                Request::SetUsbPowershare { enabled }
+            } else {
+                Request::SetAcAutoBoot { enabled }
+            }
+        }
         "reapply" => Request::Reapply,
         "probe" => {
             probe(mock);

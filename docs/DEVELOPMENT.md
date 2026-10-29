@@ -100,7 +100,13 @@ QT_QPA_PLATFORM=offscreen ./target/debug/openrevo-gui --page 1 --screenshot out.
 ```json
 {"cmd": "status"}
 {"cmd": "set_perf_mode", "mode": "turbo"}                 // office|balanced|turbo
-{"cmd": "set_charge_profile", "profile": "stationary"}   // high_capacity|balanced|stationary
+{"cmd": "set_charge_profile", "profile": "stationary"}   // high_capacity|balanced|stationary = лимит 100|80|60%
+{"cmd": "set_charge_limit", "percent": 70}                // свой лимит 40–100
+{"cmd": "set_fan_max", "enabled": true}
+{"cmd": "set_kbd_brightness", "brightness": 2}           // 0 — выключить
+{"cmd": "set_kbd_color", "color": [0, 0, 255]}
+{"cmd": "set_usb_powershare", "enabled": true}
+{"cmd": "set_ac_auto_boot", "enabled": false}
 {"cmd": "set_fn_lock", "enabled": true}
 {"cmd": "reapply"}                                        // восстановить сохранённое
 ```
@@ -108,8 +114,12 @@ QT_QPA_PLATFORM=offscreen ./target/debug/openrevo-gui --page 1 --screenshot out.
 ```json
 {"result": "ok", "status": {
   "backend": "tuxedo_io (3 режима)", "perf_mode_raw": 0, "perf_mode_saved": "balanced",
-  "profiles_available": 3, "charge_profile": "stationary", "fn_lock": false,
-  "fan1_pct": 25, "fan2_pct": 0, "ec_cpu_temp": 43, "cpu_power_w": 3.1, "errors": [],
+  "profiles_available": 3, "charge_profile": "stationary",
+  "charge_limit": {"percent": 60, "active": true}, "fn_lock": false,
+  "fan1_pct": 25, "fan2_pct": 0, "fan_max": false,
+  "kbd_backlight": {"brightness": 2, "max_brightness": 4, "color": [255, 255, 255]},
+  "usb_powershare": false, "ac_auto_boot": false,
+  "ec_cpu_temp": 43, "cpu_power_w": 3.1, "errors": [],
   "sysinfo": {"vendor": "MECHREVO", "product": "WUJIE15XA", "board": "WUJIE15-GX5HRXG", …}}}
 {"result": "error", "message": "режим «turbo» не включился: EC сообщает 0x00"}
 ```

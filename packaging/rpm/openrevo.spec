@@ -88,6 +88,13 @@ fi
 %dir %{_sharedstatedir}/openrevo
 
 %changelog
+* Thu Oct 29 2026 AbyssMoon <7919805+AbyssMoon@users.noreply.github.com> - 0.2.0-1
+- Профили заряда останавливают зарядку на 100 / 80 / 60%, свой лимит — openrevo limit
+- Вентиляторы на максимум, подсветка клавиатуры (яркость и цвет)
+- USB при выключенном ноутбуке, включение при подключении зарядки
+- При обновлении демон останавливается на время перезагрузки модулей
+- tuxedo-drivers 4.25.0 с патчем лимита заряда (4.25.0.2)
+
 * Wed Oct 28 2026 AbyssMoon <7919805+AbyssMoon@users.noreply.github.com> - 0.1.0-1
 - Первый выпуск: режимы производительности, профиль заряда, Fn Lock
 - tuxedo-drivers 4.25.0 с патчами для MECHREVO WUJIE 15X через DKMS

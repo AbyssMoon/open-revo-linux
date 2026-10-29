@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::protocol::{ChargeLimit, ChargeProfile, PerfMode};
+use crate::protocol::{ChargeLimit, ChargeProfile, KbdBacklight, PerfMode};
 use crate::sysinfo::SysInfo;
 
 pub const DEFAULT_SOCKET: &str = "/run/openrevo.sock";
@@ -26,6 +26,13 @@ pub enum Request {
     /// Лимит заряда, %; 100 — без лимита.
     SetChargeLimit { percent: u8 },
     SetFnLock { enabled: bool },
+    /// Вентиляторы на максимум.
+    SetFanMax { enabled: bool },
+    /// Яркость подсветки клавиатуры; 0 — выключить.
+    SetKbdBrightness { brightness: u8 },
+    SetKbdColor { color: [u8; 3] },
+    SetUsbPowershare { enabled: bool },
+    SetAcAutoBoot { enabled: bool },
     /// Повторно применить сохранённые режим, профиль и лимит заряда.
     Reapply,
 }
@@ -41,6 +48,9 @@ pub struct Status {
     /// Сколько режимов включил драйвер (3 — плата в списке, 0 — нет).
     #[serde(default)]
     pub profiles_available: i32,
+    /// Если драйвер умеет лимит заряда — профиль по лимиту
+    /// ([`ChargeProfile::from_limit`]; `None` при лимите, заданном вручную),
+    /// иначе — прошивочный профиль.
     pub charge_profile: Option<ChargeProfile>,
     /// `None` — драйвер не поддерживает лимит для этой модели.
     #[serde(default)]
@@ -52,6 +62,17 @@ pub struct Status {
     pub fan1_pct: Option<u8>,
     #[serde(default)]
     pub fan2_pct: Option<u8>,
+    /// Вентиляторы на максимум (бит `0x40` в `0x0751`).
+    #[serde(default)]
+    pub fan_max: Option<bool>,
+    #[serde(default)]
+    pub kbd_backlight: Option<KbdBacklight>,
+    /// Питание USB у выключенного ноутбука.
+    #[serde(default)]
+    pub usb_powershare: Option<bool>,
+    /// Включаться при подключении зарядки.
+    #[serde(default)]
+    pub ac_auto_boot: Option<bool>,
     /// Температура CPU, по которой EC управляет вентиляторами, °C.
     #[serde(default)]
     pub ec_cpu_temp: Option<u8>,

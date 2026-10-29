@@ -7,7 +7,7 @@ use cxx_qt::Threading;
 use cxx_qt_lib::QString;
 use openrevo_core::acpi_events;
 use openrevo_core::ipc::{self, IpcError, Request, Status};
-use openrevo_core::protocol::{ChargeProfile, PerfMode};
+use openrevo_core::protocol::{parse_kbd_color, ChargeProfile, PerfMode};
 
 #[cxx_qt::bridge]
 pub mod qobject {
@@ -41,6 +41,16 @@ pub mod qobject {
         /// Вентиляторы, % (-1 — неизвестно).
         #[qproperty(i32, fan1)]
         #[qproperty(i32, fan2)]
+        /// Вентиляторы на максимум: -1 — неизвестно, 0 — авто, 1 — максимум.
+        #[qproperty(i32, fan_max)]
+        /// Яркость подсветки клавиатуры (-1 — подсветки нет, 0 — выключена).
+        #[qproperty(i32, kbd_brightness)]
+        #[qproperty(i32, kbd_max)]
+        /// Цвет подсветки `#rrggbb`; пусто — одноцветная.
+        #[qproperty(QString, kbd_color)]
+        /// -1 — не поддерживается, 0 / 1.
+        #[qproperty(i32, usb_powershare)]
+        #[qproperty(i32, ac_auto_boot)]
         /// Потребление пакета CPU, Вт (-1 — неизвестно).
         #[qproperty(f64, cpu_power)]
         /// Средняя частота ядер, МГц, и температура (Tctl), °C (-1 — неизвестно).
@@ -73,7 +83,20 @@ pub mod qobject {
         fn set_charge(self: Pin<&mut Controller>, profile: &QString);
 
         #[qinvokable]
-        fn request_charge_limit(self: Pin<&mut Controller>, percent: i32);
+        fn request_fan_max(self: Pin<&mut Controller>, enabled: bool);
+
+        #[qinvokable]
+        fn request_kbd_brightness(self: Pin<&mut Controller>, brightness: i32);
+
+        /// `#rrggbb`.
+        #[qinvokable]
+        fn request_kbd_color(self: Pin<&mut Controller>, color: &QString);
+
+        #[qinvokable]
+        fn request_usb_powershare(self: Pin<&mut Controller>, enabled: bool);
+
+        #[qinvokable]
+        fn request_ac_auto_boot(self: Pin<&mut Controller>, enabled: bool);
 
         #[qinvokable]
         fn request_fn_lock(self: Pin<&mut Controller>, enabled: bool);
@@ -108,6 +131,12 @@ pub struct ControllerRust {
     fn_lock: i32,
     fan1: i32,
     fan2: i32,
+    fan_max: i32,
+    kbd_brightness: i32,
+    kbd_max: i32,
+    kbd_color: QString,
+    usb_powershare: i32,
+    ac_auto_boot: i32,
     cpu_power: f64,
     cpu_freq: i32,
     cpu_temp: i32,
@@ -139,6 +168,12 @@ impl Default for ControllerRust {
             fn_lock: -1,
             fan1: -1,
             fan2: -1,
+            fan_max: -1,
+            kbd_brightness: -1,
+            kbd_max: 0,
+            kbd_color: QString::default(),
+            usb_powershare: -1,
+            ac_auto_boot: -1,
             cpu_power: -1.0,
             cpu_freq: -1,
             cpu_temp: -1,
@@ -296,6 +331,18 @@ impl qobject::Controller {
         self.as_mut().set_fn_lock(s.fn_lock.map_or(-1, i32::from));
         self.as_mut().set_fan1(s.fan1_pct.map_or(-1, i32::from));
         self.as_mut().set_fan2(s.fan2_pct.map_or(-1, i32::from));
+        self.as_mut().set_fan_max(s.fan_max.map_or(-1, i32::from));
+        self.as_mut()
+            .set_kbd_brightness(s.kbd_backlight.map_or(-1, |k| i32::from(k.brightness)));
+        self.as_mut()
+            .set_kbd_max(s.kbd_backlight.map_or(0, |k| i32::from(k.max_brightness)));
+        self.as_mut().set_kbd_color(QString::from(
+            s.kbd_backlight
+                .and_then(|k| k.color)
+                .map_or(String::new(), |[r, g, b]| format!("#{r:02x}{g:02x}{b:02x}")),
+        ));
+        self.as_mut().set_usb_powershare(s.usb_powershare.map_or(-1, i32::from));
+        self.as_mut().set_ac_auto_boot(s.ac_auto_boot.map_or(-1, i32::from));
         self.as_mut().set_cpu_power(s.cpu_power_w.unwrap_or(-1.0));
         // Без k10temp — температура, по которой EC крутит вентиляторы.
         if *self.cpu_temp() < 0 {
@@ -339,11 +386,30 @@ impl qobject::Controller {
         self.apply_action(ipc::request(&Request::SetChargeProfile { profile }));
     }
 
-    pub fn request_charge_limit(self: Pin<&mut Self>, percent: i32) {
-        let Ok(percent) = u8::try_from(percent) else {
+    pub fn request_fan_max(self: Pin<&mut Self>, enabled: bool) {
+        self.apply_action(ipc::request(&Request::SetFanMax { enabled }));
+    }
+
+    pub fn request_kbd_brightness(self: Pin<&mut Self>, brightness: i32) {
+        let Ok(brightness) = u8::try_from(brightness) else {
             return;
         };
-        self.apply_action(ipc::request(&Request::SetChargeLimit { percent }));
+        self.apply_action(ipc::request(&Request::SetKbdBrightness { brightness }));
+    }
+
+    pub fn request_kbd_color(self: Pin<&mut Self>, color: &QString) {
+        let Some(color) = parse_kbd_color(&color.to_string()) else {
+            return;
+        };
+        self.apply_action(ipc::request(&Request::SetKbdColor { color }));
+    }
+
+    pub fn request_usb_powershare(self: Pin<&mut Self>, enabled: bool) {
+        self.apply_action(ipc::request(&Request::SetUsbPowershare { enabled }));
+    }
+
+    pub fn request_ac_auto_boot(self: Pin<&mut Self>, enabled: bool) {
+        self.apply_action(ipc::request(&Request::SetAcAutoBoot { enabled }));
     }
 
     pub fn request_fn_lock(self: Pin<&mut Self>, enabled: bool) {

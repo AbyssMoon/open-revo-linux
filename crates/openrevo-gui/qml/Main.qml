@@ -52,10 +52,10 @@ ApplicationWindow {
         const p = ctl.batteryPower;
         if (Math.abs(p) >= 0.1)
             s += " · " + (p > 0 ? "+" : "−") + Math.abs(p).toFixed(1) + " Вт";
-        if (ctl.chargeProfile !== "" && ctl.chargeProfile !== "high_capacity")
+        if (win.chargeUpTo < 100)
+            s += " · заряд до " + win.chargeUpTo + "%";
+        else if (!win.hasChargeLimit && ctl.chargeProfile !== "" && ctl.chargeProfile !== "high_capacity")
             s += " · " + win.chargeTitle[ctl.chargeProfile].toLowerCase();
-        if (ctl.chargeLimitActive && ctl.chargeLimit > 0 && ctl.chargeLimit < 100)
-            s += " · заряд до " + ctl.chargeLimit + "%";
         return s;
     }
 
@@ -109,6 +109,19 @@ ApplicationWindow {
                 onTriggered: ctl.setPerf("turbo")
             }
             Platform.MenuSeparator {}
+            Platform.MenuItem {
+                text: "Вентиляторы на максимум"; checkable: true
+                visible: ctl.fanMax >= 0
+                checked: ctl.fanMax === 1; enabled: ctl.connected
+                onTriggered: ctl.requestFanMax(ctl.fanMax !== 1)
+            }
+            Platform.MenuItem {
+                text: "Подсветка клавиатуры"; checkable: true
+                visible: ctl.kbdBrightness >= 0
+                checked: ctl.kbdBrightness > 0; enabled: ctl.connected
+                onTriggered: ctl.requestKbdBrightness(ctl.kbdBrightness > 0 ? 0
+                                                      : (win.kbdOnLevel || Math.ceil(ctl.kbdMax / 2)))
+            }
             Platform.MenuItem {
                 text: "Fn Lock"; checkable: true
                 visible: ctl.fnLock >= 0
@@ -185,10 +198,32 @@ ApplicationWindow {
         high_capacity: "#fbbf24", balanced: "#34d399", stationary: "#38bdf8"
     })
     readonly property var chargeHint: ({
-        high_capacity: "Максимальная автономность",
-        balanced: "Щадящий режим и хороший запас хода",
-        stationary: "Ноутбук почти всё время на зарядке — бережёт батарею сильнее всего"
+        high_capacity: "Максимум времени работы без розетки — например, в дорогу",
+        balanced: "Хватит на обычный день, а батарея изнашивается медленнее",
+        stationary: "Ноутбук почти всегда подключён к сети — батарея прослужит дольше всего"
     })
+    // До скольких процентов заряжает профиль (если драйвер умеет лимит заряда).
+    readonly property var chargeLimitOf: ({ high_capacity: 100, balanced: 80, stationary: 60 })
+    readonly property bool hasChargeLimit: ctl.chargeLimit >= 0
+    // До скольких процентов батарея зарядится сейчас.
+    readonly property int chargeUpTo: win.hasChargeLimit && ctl.chargeLimitActive
+                                      && ctl.chargeLimit > 0 && ctl.chargeLimit < 100 ? ctl.chargeLimit : 100
+
+    // Подсветка: на какой уровень включать (последний ненулевой).
+    property int kbdOnLevel: 0
+    Connections {
+        target: ctl
+        function onKbdBrightnessChanged() {
+            if (ctl.kbdBrightness > 0)
+                win.kbdOnLevel = ctl.kbdBrightness;
+        }
+    }
+    readonly property var kbdColors: [
+        { name: "Белый", c: "#ffffff" }, { name: "Красный", c: "#ff0000" },
+        { name: "Оранжевый", c: "#ff6000" }, { name: "Жёлтый", c: "#ffc800" },
+        { name: "Зелёный", c: "#00ff00" }, { name: "Бирюзовый", c: "#00ffff" },
+        { name: "Синий", c: "#0000ff" }, { name: "Фиолетовый", c: "#a000ff" }
+    ]
 
     readonly property var pages: [
         { title: "Производительность", icon: "perf" },
@@ -448,16 +483,18 @@ ApplicationWindow {
                                     visible: ctl.fan1 >= 0
                                     spacing: 16
 
+                                    // Модель — число, а не массив со значениями: массив
+                                    // собирался бы заново на каждом обновлении, строки
+                                    // пересоздавались бы, и полоска росла бы от нуля.
                                     Repeater {
-                                        model: [
-                                            { n: "CPU", v: ctl.fan1 },
-                                            { n: "второй", v: ctl.fan2 }
-                                        ]
+                                        model: 2
                                         RowLayout {
                                             id: fanRow
-                                            required property var modelData
+                                            required property int index
+                                            readonly property int v: index === 0 ? ctl.fan1 : ctl.fan2
+                                            readonly property string n: index === 0 ? "CPU" : "второй"
                                             Layout.fillWidth: true
-                                            visible: modelData.v >= 0
+                                            visible: v >= 0
                                             spacing: 8
 
                                             Image {
@@ -466,13 +503,13 @@ ApplicationWindow {
                                                 // Крутится, пока вентилятор работает.
                                                 RotationAnimation on rotation {
                                                     from: 0; to: 360
-                                                    duration: Math.max(300, 3000 - fanRow.modelData.v * 25)
+                                                    duration: Math.max(300, 3000 - fanRow.v * 25)
                                                     loops: Animation.Infinite
-                                                    running: fanRow.modelData.v > 0 && win.visible
+                                                    running: fanRow.v > 0 && win.visible
                                                 }
                                             }
                                             Label {
-                                                text: "вентилятор " + fanRow.modelData.n
+                                                text: "вентилятор " + fanRow.n
                                                 color: "#8a8a8a"
                                                 font.pixelSize: 12
                                             }
@@ -482,7 +519,7 @@ ApplicationWindow {
                                                 radius: 3
                                                 color: "#333333"
                                                 Rectangle {
-                                                    width: parent.width * fanRow.modelData.v / 100
+                                                    width: parent.width * fanRow.v / 100
                                                     height: parent.height
                                                     radius: 3
                                                     color: win.modeColor[ctl.perfMode] || "#9ca3af"
@@ -492,12 +529,47 @@ ApplicationWindow {
                                             Label {
                                                 Layout.preferredWidth: 38
                                                 horizontalAlignment: Text.AlignRight
-                                                text: fanRow.modelData.v > 0 ? fanRow.modelData.v + "%" : "стоит"
+                                                text: fanRow.v > 0 ? fanRow.v + "%" : "стоит"
                                                 color: "white"
                                                 font.pixelSize: 12
                                             }
                                         }
                                     }
+                                }
+                            }
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            visible: ctl.fanMax >= 0
+                            spacing: 10
+
+                            Switch {
+                                enabled: ctl.connected
+                                checked: ctl.fanMax === 1
+                                onToggled: {
+                                    const want = checked;
+                                    checked = Qt.binding(() => ctl.fanMax === 1);
+                                    ctl.requestFanMax(want);
+                                }
+                            }
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                spacing: 0
+                                Label {
+                                    text: "Вентиляторы на максимум"
+                                    font.bold: true
+                                }
+                                Label {
+                                    Layout.fillWidth: true
+                                    wrapMode: Text.Wrap
+                                    opacity: 0.65
+                                    font.pixelSize: 12
+                                    text: ctl.fanMax === 1
+                                        ? "Оба вентилятора на полных оборотах — громко, но ноутбук холоднее. "
+                                          + "После перезагрузки снова включится автоматика."
+                                        : "Для долгой тяжёлой нагрузки: игры, сборка, рендер. "
+                                          + "Обычно автоматика справляется сама."
                                 }
                             }
                         }
@@ -516,7 +588,7 @@ ApplicationWindow {
                             wrapMode: Text.Wrap
                             opacity: 0.6
                             font.pixelSize: 12
-                            text: "Командой: openrevo perf office|balanced|turbo — можно назначить на сочетание клавиш."
+                            text: "Командой: openrevo perf office|balanced|turbo, openrevo fanmax on|off — можно назначить на сочетание клавиш."
                         }
                         Item { Layout.fillHeight: true }
                     }
@@ -576,6 +648,10 @@ ApplicationWindow {
                                             text: {
                                                 const st = { "Charging": "⚡ Заряжается", "Discharging": "Разряжается",
                                                              "Not charging": "⏸ Не заряжается", "Full": "Заряжена" };
+                                                // Зарядку остановил лимит, а не что-то непонятное.
+                                                if (ctl.batteryStatus === "Not charging" && ctl.acOnline === 1
+                                                        && win.chargeUpTo < 100 && ctl.batteryCapacity >= win.chargeUpTo - 2)
+                                                    return "⏸ Заряд держится на уровне " + win.chargeUpTo + "%";
                                                 return st[ctl.batteryStatus] || ctl.batteryStatus || "—";
                                             }
                                         }
@@ -667,9 +743,10 @@ ApplicationWindow {
                                     imageSize: 64
                                     image: "img/charge_" + profile + ".svg"
                                     caption: win.chargeTitle[profile]
+                                    subtitle: win.hasChargeLimit ? "до " + win.chargeLimitOf[profile] + "%" : ""
                                     accent: win.chargeColor[profile]
                                     checked: ctl.chargeProfile === profile
-                                    enabled: ctl.connected && ctl.chargeProfile !== ""
+                                    enabled: ctl.connected && (ctl.chargeProfile !== "" || win.hasChargeLimit)
                                     ToolTip.visible: hovered
                                     ToolTip.delay: 400
                                     ToolTip.text: win.chargeHint[profile]
@@ -683,58 +760,34 @@ ApplicationWindow {
 
                         Label {
                             Layout.fillWidth: true
+                            visible: win.hasChargeLimit && ctl.connected && ctl.chargeProfile === ""
+                            wrapMode: Text.Wrap
+                            text: "Сейчас задан свой лимит: заряд до " + win.chargeUpTo + "% (командой openrevo limit). "
+                                + "Выберите профиль, чтобы вернуться к обычным настройкам."
+                        }
+
+                        Label {
+                            Layout.fillWidth: true
                             wrapMode: Text.Wrap
                             opacity: 0.7
+                            visible: win.hasChargeLimit
+                            text: "Батарея стареет быстрее, если подолгу держать её заряженной до 100%. "
+                                + "Если ноутбук в основном работает от розетки, выберите «Баланс» или «Всегда от сети»: "
+                                + "зарядка остановится на нужном уровне, а ноутбук продолжит работать от сети. "
+                                + "Перед поездкой включите «Полный заряд».\n\n"
+                                + "Если заряд уже выше выбранного уровня, он не сбрасывается — батарея просто "
+                                + "не заряжается, пока не разрядится ниже. Настройка хранится в самом ноутбуке "
+                                + "и работает, даже когда программа закрыта."
+                        }
+
+                        Label {
+                            Layout.fillWidth: true
+                            wrapMode: Text.Wrap
+                            opacity: 0.7
+                            visible: !win.hasChargeLimit
                             text: "Профиль хранит контроллер ноутбука (EC). В щадящих профилях прошивка уменьшает "
                                 + "ёмкость, которую батарея считает полной: индикатор всё равно доходит до 100%, "
                                 + "а реальный запас меньше — смотрите Вт·ч выше."
-                        }
-
-                        // Лимит заряда: только если драйвер его поддерживает (патч 0003).
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            spacing: 6
-                            visible: ctl.chargeLimit >= 0
-
-                            RowLayout {
-                                Layout.fillWidth: true
-                                Label {
-                                    text: "Лимит заряда"
-                                    font.pixelSize: 15
-                                    font.bold: true
-                                }
-                                Item { Layout.fillWidth: true }
-                                Label {
-                                    font.pixelSize: 15
-                                    text: limitSlider.value >= 100 ? "без лимита" : Math.round(limitSlider.value) + "%"
-                                }
-                            }
-
-                            Slider {
-                                id: limitSlider
-                                Layout.fillWidth: true
-                                from: 40; to: 100; stepSize: 5
-                                snapMode: Slider.SnapAlways
-                                enabled: ctl.connected
-                                // Показываем 100, если EC лимит не соблюдает: заряжает всё равно до конца.
-                                value: ctl.chargeLimitActive ? ctl.chargeLimit : 100
-                                onPressedChanged: {
-                                    if (pressed) return;
-                                    const want = Math.round(value);
-                                    value = Qt.binding(() => ctl.chargeLimitActive ? ctl.chargeLimit : 100);
-                                    if (want !== (ctl.chargeLimitActive ? ctl.chargeLimit : 100))
-                                        ctl.requestChargeLimit(want);
-                                }
-                            }
-
-                            Label {
-                                Layout.fillWidth: true
-                                wrapMode: Text.Wrap
-                                opacity: 0.7
-                                text: "Зарядка останавливается на выбранном проценте. Прошивка MECHREVO с завода "
-                                    + "лимит не соблюдает — при первом включении Open Revo обходит это (около 2 секунд). "
-                                    + "Экспериментально: проверено на WUJIE 14XA, на 15X — пока нет."
-                            }
                         }
                         Item { Layout.fillHeight: true }
                     }
@@ -749,6 +802,110 @@ ApplicationWindow {
                             font.pixelSize: 16
                             font.bold: true
                         }
+
+                        // Подсветка.
+                        RowLayout {
+                            Layout.fillWidth: true
+                            visible: ctl.kbdBrightness >= 0
+                            spacing: 10
+
+                            Switch {
+                                enabled: ctl.connected
+                                checked: ctl.kbdBrightness > 0
+                                onToggled: {
+                                    const want = checked;
+                                    checked = Qt.binding(() => ctl.kbdBrightness > 0);
+                                    ctl.requestKbdBrightness(want ? (win.kbdOnLevel || Math.ceil(ctl.kbdMax / 2)) : 0);
+                                }
+                            }
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                spacing: 0
+                                Label {
+                                    text: "Подсветка клавиатуры"
+                                    font.bold: true
+                                }
+                                Label {
+                                    Layout.fillWidth: true
+                                    wrapMode: Text.Wrap
+                                    opacity: 0.65
+                                    font.pixelSize: 12
+                                    text: "Яркость меняется и клавишей Fn на ноутбуке — программа её запомнит "
+                                        + "и вернёт после перезагрузки."
+                                }
+                            }
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Layout.leftMargin: 4
+                            visible: ctl.kbdBrightness >= 0 && ctl.kbdMax > 1
+                            spacing: 6
+
+                            Label {
+                                text: "Яркость"
+                                Layout.preferredWidth: 70
+                            }
+                            Repeater {
+                                model: ctl.kbdMax
+                                Button {
+                                    required property int index
+                                    readonly property int level: index + 1
+                                    Layout.preferredWidth: 44
+                                    text: level
+                                    checkable: true
+                                    checked: ctl.kbdBrightness === level
+                                    enabled: ctl.connected
+                                    onClicked: {
+                                        checked = Qt.binding(() => ctl.kbdBrightness === level);
+                                        ctl.requestKbdBrightness(level);
+                                    }
+                                }
+                            }
+                            Item { Layout.fillWidth: true }
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Layout.leftMargin: 4
+                            visible: ctl.kbdBrightness >= 0 && ctl.kbdColor !== ""
+                            spacing: 8
+
+                            Label {
+                                text: "Цвет"
+                                Layout.preferredWidth: 70
+                            }
+                            Repeater {
+                                model: win.kbdColors
+                                Rectangle {
+                                    id: swatch
+                                    required property var modelData
+                                    readonly property bool current: Qt.colorEqual(ctl.kbdColor, modelData.c)
+                                    width: 28
+                                    height: 28
+                                    radius: 14
+                                    color: modelData.c
+                                    border.width: current ? 3 : 1
+                                    border.color: current ? "#2f7fc1" : Qt.darker(win.palette.window, 1.4)
+                                    opacity: ctl.connected ? 1 : 0.4
+
+                                    MouseArea {
+                                        id: swatchArea
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        enabled: ctl.connected
+                                        onClicked: ctl.requestKbdColor(swatch.modelData.c)
+                                    }
+                                    ToolTip.visible: swatchArea.containsMouse
+                                    ToolTip.delay: 400
+                                    ToolTip.text: swatch.modelData.name
+                                }
+                            }
+                            Item { Layout.fillWidth: true }
+                        }
+
+                        Item { implicitHeight: 4; visible: ctl.kbdBrightness >= 0 }
 
                         RowLayout {
                             Layout.fillWidth: true
@@ -786,7 +943,8 @@ ApplicationWindow {
                             Layout.fillWidth: true
                             wrapMode: Text.Wrap
                             opacity: 0.7
-                            text: "Командой: <tt>openrevo fnlock toggle</tt>."
+                            text: "Командой: <tt>openrevo fnlock toggle</tt>, <tt>openrevo kbd toggle</tt>, "
+                                + "<tt>openrevo kbd color blue</tt>."
                         }
                         Item { Layout.fillHeight: true }
                     }
@@ -794,6 +952,61 @@ ApplicationWindow {
                     // --- Система ---
                     ColumnLayout {
                         spacing: 8
+
+                        Label {
+                            text: "Питание"
+                            font.pixelSize: 16
+                            font.bold: true
+                            visible: ctl.usbPowershare >= 0 || ctl.acAutoBoot >= 0
+                        }
+
+                        Repeater {
+                            model: [
+                                { key: "usb", title: "USB при выключенном ноутбуке",
+                                  hint: "Порты USB дают питание, когда ноутбук выключен, — можно заряжать телефон. "
+                                      + "От батареи это расходует заряд." },
+                                { key: "boot", title: "Включаться при подключении зарядки",
+                                  hint: "Ноутбук сам включится, как только к нему подключат зарядку." }
+                            ]
+                            RowLayout {
+                                id: powerRow
+                                required property var modelData
+                                readonly property int value: modelData.key === "usb" ? ctl.usbPowershare : ctl.acAutoBoot
+                                Layout.fillWidth: true
+                                visible: value >= 0
+                                spacing: 10
+
+                                Switch {
+                                    enabled: ctl.connected
+                                    checked: powerRow.value === 1
+                                    onToggled: {
+                                        const want = checked;
+                                        checked = Qt.binding(() => powerRow.value === 1);
+                                        if (powerRow.modelData.key === "usb")
+                                            ctl.requestUsbPowershare(want);
+                                        else
+                                            ctl.requestAcAutoBoot(want);
+                                    }
+                                }
+                                ColumnLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 0
+                                    Label {
+                                        text: powerRow.modelData.title
+                                        font.bold: true
+                                    }
+                                    Label {
+                                        Layout.fillWidth: true
+                                        wrapMode: Text.Wrap
+                                        opacity: 0.65
+                                        font.pixelSize: 12
+                                        text: powerRow.modelData.hint
+                                    }
+                                }
+                            }
+                        }
+
+                        Item { implicitHeight: 8; visible: ctl.usbPowershare >= 0 || ctl.acAutoBoot >= 0 }
 
                         Label {
                             text: "Сведения о системе"
