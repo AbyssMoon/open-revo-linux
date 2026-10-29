@@ -29,13 +29,20 @@ case "$ACTION" in
             dkms install -m "$NAME" -v "$VER" -k "$(basename "$k")" >/dev/null 2>&1 || \
                 echo "openrevo: не удалось собрать драйвер для ядра $(basename "$k")" >&2
         done
-        # Загруженные модули могли остаться от прошлой версии. uniwill_wmi
-        # при загрузке системы подтягивает udev по WMI-устройству, а после
-        # выгрузки — нет, поэтому грузим его явно.
+        # Загруженные модули могли остаться от прошлой версии. Демон держит
+        # /dev/tuxedo_io открытым, и tuxedo_io не выгрузится — останавливаем
+        # демон на это время. uniwill_wmi при загрузке системы подтягивает udev
+        # по WMI-устройству, а после выгрузки — нет, поэтому грузим его явно.
+        daemon_was_active=
+        if systemctl is-active -q openrevod.service 2>/dev/null; then
+            daemon_was_active=1
+            systemctl stop openrevod.service || true
+        fi
         unload
         for m in tuxedo_keyboard uniwill_wmi tuxedo_io; do
             modprobe "$m" 2>/dev/null || true
         done
+        [ -z "$daemon_was_active" ] || systemctl start openrevod.service || true
         ;;
     remove)
         unload
