@@ -51,6 +51,13 @@ pub mod qobject {
         /// -1 — не поддерживается, 0 / 1.
         #[qproperty(i32, usb_powershare)]
         #[qproperty(i32, ac_auto_boot)]
+        /// Циклы батареи (-1 — неизвестно).
+        #[qproperty(i32, battery_cycles)]
+        /// До какого напряжения EC заряжает и сколько просит батарея, мВ (-1 — неизвестно).
+        #[qproperty(i32, charge_voltage_mv)]
+        #[qproperty(i32, full_voltage_mv)]
+        /// Снижение напряжения на банку, мВ.
+        #[qproperty(i32, voltage_derating)]
         /// Потребление пакета CPU, Вт (-1 — неизвестно).
         #[qproperty(f64, cpu_power)]
         /// Средняя частота ядер, МГц, и температура (Tctl), °C (-1 — неизвестно).
@@ -137,6 +144,10 @@ pub struct ControllerRust {
     kbd_color: QString,
     usb_powershare: i32,
     ac_auto_boot: i32,
+    battery_cycles: i32,
+    charge_voltage_mv: i32,
+    full_voltage_mv: i32,
+    voltage_derating: i32,
     cpu_power: f64,
     cpu_freq: i32,
     cpu_temp: i32,
@@ -174,6 +185,10 @@ impl Default for ControllerRust {
             kbd_color: QString::default(),
             usb_powershare: -1,
             ac_auto_boot: -1,
+            battery_cycles: -1,
+            charge_voltage_mv: -1,
+            full_voltage_mv: -1,
+            voltage_derating: 0,
             cpu_power: -1.0,
             cpu_freq: -1,
             cpu_temp: -1,
@@ -343,6 +358,11 @@ impl qobject::Controller {
         ));
         self.as_mut().set_usb_powershare(s.usb_powershare.map_or(-1, i32::from));
         self.as_mut().set_ac_auto_boot(s.ac_auto_boot.map_or(-1, i32::from));
+        self.as_mut().set_battery_cycles(s.battery_cycles.map_or(-1, i32::from));
+        let v = s.charge_voltage;
+        self.as_mut().set_charge_voltage_mv(v.map_or(-1, |v| i32::from(v.charge_mv)));
+        self.as_mut().set_full_voltage_mv(v.map_or(-1, |v| i32::from(v.full_mv)));
+        self.as_mut().set_voltage_derating(v.map_or(0, |v| i32::from(v.derating_per_cell())));
         self.as_mut().set_cpu_power(s.cpu_power_w.unwrap_or(-1.0));
         // Без k10temp — температура, по которой EC крутит вентиляторы.
         if *self.cpu_temp() < 0 {

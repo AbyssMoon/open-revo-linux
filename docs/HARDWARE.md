@@ -57,6 +57,8 @@
 | Подсветка клавиатуры | `/sys/class/leds/rgb:kbd_backlight` — `brightness` 0–4, `multi_intensity` «R G B» | однозонная RGB (EC: `FEATURES_1`, бит 1-zone RGB) |
 | USB при выключенном ноутбуке | `/sys/devices/platform/tuxedo_keyboard/usb_powershare/usb_powershare` | 0 / 1 |
 | Включение от зарядки | `/sys/devices/platform/tuxedo_keyboard/ac_auto_boot/ac_auto_boot` | 0 / 1 |
+| Циклы батареи | окно EC `0xFED50000` + `0x04A6` (LE), `/dev/mem`, только чтение | в sysfs `cycle_count` = 0 |
+| Напряжение заряда | окно EC: `0x030E` (BE) — просит батарея, `0x0522` (LE) — цель EC, `0x0491` биты 7:6 — банки | мВ, см. RESEARCH.md |
 | Вентиляторы на максимум | ioctl `R_UW_MODE` / `W_UW_MODE` (`0x4008f012`) — EC `0x0751`, бит `0x40` | 0 / 1 |
 | Вентиляторы | ioctl `R_UW_FANSPEED` / `R_UW_FANSPEED2` — EC `0x1804` / `0x1809` | 0–200 |
 | Температура для вентиляторов | ioctl `R_UW_FAN_TEMP` — EC `0x043E` | °C |

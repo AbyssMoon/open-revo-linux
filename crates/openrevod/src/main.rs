@@ -210,6 +210,8 @@ impl Daemon {
         let kbd_backlight = self.backend.kbd_backlight().ok();
         let usb_powershare = self.backend.usb_powershare().ok();
         let ac_auto_boot = self.backend.ac_auto_boot().ok();
+        let battery_cycles = self.backend.battery_cycles().ok();
+        let charge_voltage = self.backend.charge_voltage().ok();
         // Есть не на всех моделях — ошибку не показываем.
         let fn_lock = self.backend.fn_lock().ok();
         let fan1_pct = self.backend.fan_raw(0).ok().map(fan_percent);
@@ -235,6 +237,8 @@ impl Daemon {
             kbd_backlight,
             usb_powershare,
             ac_auto_boot,
+            battery_cycles,
+            charge_voltage,
             ec_cpu_temp,
             cpu_power_w: self.cpu_power_w,
             errors,

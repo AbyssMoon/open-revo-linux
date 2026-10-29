@@ -25,7 +25,7 @@
 
 | Крейт | Что внутри |
 |---|---|
-| `openrevo-core` | `protocol` — режимы и профили заряда, разбор `0x0751`; `backend` — `TuxedoIo` (ioctl + sysfs) и `Mock`, запись с проверкой; `ipc` — JSON-протокол; `power` — счётчик энергии RAPL; `sysinfo` — DMI и замеры для известных плат; `acpi_events` — события ACPI (netlink). |
+| `openrevo-core` | `protocol` — режимы и профили заряда, разбор `0x0751`; `backend` — `TuxedoIo` (ioctl + sysfs) и `Mock`, запись с проверкой; `ipc` — JSON-протокол; `ec_window` — окно памяти EC (только чтение: циклы, напряжение заряда); `power` — счётчик энергии RAPL; `sysinfo` — DMI и замеры для известных плат; `acpi_events` — события ACPI (netlink). |
 | `openrevod` | Демон: обслуживает сокет, хранит настройки (`state.json`), раз в 2 с считает мощность CPU, замечает выход из сна (восстанавливает настройки) и смену режима в обход демона (запоминает её). |
 | `openrevo-cli` | Клиент демона и `probe` — прямое чтение через `/dev/tuxedo_io`. |
 | `openrevo-gui` | QObject `Controller` (cxx-qt) + QML. Батарею, частоту и температуру читает сам из sysfs — root для этого не нужен. |
@@ -118,7 +118,8 @@ QT_QPA_PLATFORM=offscreen ./target/debug/openrevo-gui --page 1 --screenshot out.
   "charge_limit": {"percent": 60, "active": true}, "fn_lock": false,
   "fan1_pct": 25, "fan2_pct": 0, "fan_max": false,
   "kbd_backlight": {"brightness": 2, "max_brightness": 4, "color": [255, 255, 255]},
-  "usb_powershare": false, "ac_auto_boot": false,
+  "usb_powershare": false, "ac_auto_boot": false, "battery_cycles": 121,
+  "charge_voltage": {"charge_mv": 16800, "full_mv": 17800, "cells": 4},
   "ec_cpu_temp": 43, "cpu_power_w": 3.1, "errors": [],
   "sysinfo": {"vendor": "MECHREVO", "product": "WUJIE15XA", "board": "WUJIE15-GX5HRXG", …}}}
 {"result": "error", "message": "режим «turbo» не включился: EC сообщает 0x00"}

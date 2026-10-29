@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::protocol::{ChargeLimit, ChargeProfile, KbdBacklight, PerfMode};
+use crate::protocol::{ChargeLimit, ChargeProfile, ChargeVoltage, KbdBacklight, PerfMode};
 use crate::sysinfo::SysInfo;
 
 pub const DEFAULT_SOCKET: &str = "/run/openrevo.sock";
@@ -73,6 +73,12 @@ pub struct Status {
     /// Включаться при подключении зарядки.
     #[serde(default)]
     pub ac_auto_boot: Option<bool>,
+    /// Циклы батареи.
+    #[serde(default)]
+    pub battery_cycles: Option<u16>,
+    /// До какого напряжения EC заряжает батарею.
+    #[serde(default)]
+    pub charge_voltage: Option<ChargeVoltage>,
     /// Температура CPU, по которой EC управляет вентиляторами, °C.
     #[serde(default)]
     pub ec_cpu_temp: Option<u8>,

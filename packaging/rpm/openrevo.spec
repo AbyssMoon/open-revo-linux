@@ -88,6 +88,9 @@ fi
 %dir %{_sharedstatedir}/openrevo
 
 %changelog
+* Thu Oct 29 2026 AbyssMoon <7919805+AbyssMoon@users.noreply.github.com> - 0.3.0-1
+- Циклы батареи и напряжение заряда EC на вкладке «Батарея» и в openrevo status
+
 * Thu Oct 29 2026 AbyssMoon <7919805+AbyssMoon@users.noreply.github.com> - 0.2.0-1
 - Профили заряда останавливают зарядку на 100 / 80 / 60%, свой лимит — openrevo limit
 - Вентиляторы на максимум, подсветка клавиатуры (яркость и цвет)

@@ -225,6 +225,11 @@ ApplicationWindow {
         { name: "Синий", c: "#0000ff" }, { name: "Фиолетовый", c: "#a000ff" }
     ]
 
+    // 16800 → «16,8 В».
+    function volts(mv) {
+        return (mv / 1000).toFixed(1).replace(".", ",") + " В";
+    }
+
     readonly property var pages: [
         { title: "Производительность", icon: "perf" },
         { title: "Батарея", icon: "battery" },
@@ -718,6 +723,45 @@ ApplicationWindow {
                                             s.push("полная ёмкость " + Math.round(f / d * 100) + "% от паспортной (" + d.toFixed(0) + " Вт·ч)");
                                         return s.join(" · ");
                                     }
+                                }
+
+                                // Циклы и напряжение заряда — из памяти EC (демон, только чтение).
+                                Label {
+                                    id: voltageLine
+                                    color: "#999999"
+                                    font.pixelSize: 12
+                                    visible: text.length > 0
+                                    readonly property string volts: ctl.chargeVoltageMv > 0
+                                        ? "EC заряжает до " + win.volts(ctl.chargeVoltageMv) + " из "
+                                          + win.volts(ctl.fullVoltageMv) : ""
+                                    text: {
+                                        let s = [];
+                                        if (ctl.batteryCycles >= 0)
+                                            s.push("циклов: " + ctl.batteryCycles);
+                                        if (volts !== "")
+                                            s.push(volts);
+                                        return s.join(" · ");
+                                    }
+                                    MouseArea {
+                                        id: voltageArea
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                    }
+                                    ToolTip.visible: voltageArea.containsMouse && ctl.chargeVoltageMv > 0
+                                    ToolTip.delay: 300
+                                    ToolTip.text: "Батарея рассчитана на заряд до " + win.volts(ctl.fullVoltageMv)
+                                        + ". Прошивка ноутбука снижает это напряжение, чтобы беречь батарею "
+                                        + "по мере износа, — и в батарею входит меньше энергии."
+                                }
+                                Label {
+                                    Layout.fillWidth: true
+                                    wrapMode: Text.Wrap
+                                    color: "#999999"
+                                    font.pixelSize: 12
+                                    visible: ctl.voltageDerating > 0
+                                    text: "Прошивка недозаряжает батарею на " + win.volts(ctl.fullVoltageMv - ctl.chargeVoltageMv)
+                                        + " — поэтому полная ёмкость ниже паспортной, "
+                                        + "даже если сама батарея изношена меньше."
                                 }
                             }
                         }

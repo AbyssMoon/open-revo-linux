@@ -4,7 +4,8 @@
 use std::fs::{self, File, OpenOptions};
 use std::os::fd::AsRawFd;
 
-use crate::protocol::{ChargeLimit, ChargeProfile, KbdBacklight, PerfMode, CHARGE_LIMIT_MAX, CHARGE_LIMIT_MIN, FAN_MAX_BIT};
+use crate::ec_window::EcWindow;
+use crate::protocol::{ChargeLimit, ChargeProfile, ChargeVoltage, KbdBacklight, PerfMode, CHARGE_LIMIT_MAX, CHARGE_LIMIT_MIN, FAN_MAX_BIT};
 
 pub const TUXEDO_IO: &str = "/dev/tuxedo_io";
 const PLATFORM: &str = "/sys/devices/platform/tuxedo_keyboard";
@@ -61,6 +62,10 @@ pub trait Backend: Send {
     /// Включаться при подключении зарядки.
     fn ac_auto_boot(&mut self) -> Result<bool>;
     fn set_ac_auto_boot(&mut self, enabled: bool) -> Result<()>;
+    /// Циклы батареи (их EC берёт у контроллера батареи; в sysfs — 0).
+    fn battery_cycles(&mut self) -> Result<u16>;
+    /// До какого напряжения EC заряжает и сколько просит батарея.
+    fn charge_voltage(&mut self) -> Result<ChargeVoltage>;
 }
 
 // --- tuxedo_io ---------------------------------------------------------------
@@ -97,6 +102,8 @@ const W_UW_CHARGE_LIMIT_UNLOCK: u64 = (MAGIC_WRITE_UW << 8) | 0x41;
 pub struct TuxedoIo {
     dev: File,
     profiles: i32,
+    /// Окно памяти EC, только чтение; только на MECHREVO.
+    ec: Option<EcWindow>,
 }
 
 impl TuxedoIo {
@@ -106,7 +113,9 @@ impl TuxedoIo {
                 "нет {TUXEDO_IO} ({e}): модуль tuxedo_io не загружен или драйвер не собран под это ядро"
             ))
         })?;
-        let mut b = TuxedoIo { dev, profiles: 0 };
+        // Адреса окна EC известны только для прошивки MECHREVO.
+        let ec = if crate::sysinfo::SysInfo::read().is_mechrevo() { EcWindow::open().ok() } else { None };
+        let mut b = TuxedoIo { dev, profiles: 0, ec };
         if b.read(R_HWCHECK_UW)? != 1 {
             return Err(Error::Io("tuxedo_io не нашёл интерфейс Uniwill: это не ноутбук на платформе Uniwill".into()));
         }
@@ -117,6 +126,10 @@ impl TuxedoIo {
     /// Сколько режимов драйвер включил для этой платы (0 — плата не в списке).
     pub fn profiles_available(&self) -> i32 {
         self.profiles
+    }
+
+    fn ec_window(&self) -> Result<&EcWindow> {
+        self.ec.as_ref().ok_or_else(|| Error::Unsupported("окно памяти EC недоступно".into()))
     }
 
     fn read(&mut self, req: u64) -> Result<i32> {
@@ -299,6 +312,16 @@ impl Backend for TuxedoIo {
         sysfs_write(&format!("{PLATFORM}/ac_auto_boot/ac_auto_boot"), if enabled { "1" } else { "0" })
     }
 
+    fn battery_cycles(&mut self) -> Result<u16> {
+        self.ec_window()?.battery_cycles().ok_or_else(|| Error::Io("EC не отдал число циклов".into()))
+    }
+
+    fn charge_voltage(&mut self) -> Result<ChargeVoltage> {
+        self.ec_window()?
+            .charge_voltage()
+            .ok_or_else(|| Error::Io("EC отдал неправдоподобное напряжение заряда".into()))
+    }
+
     fn set_fan_max(&mut self, enabled: bool) -> Result<()> {
         // W_UW_MODE пишет весь 0x0751: биты режима берём текущие.
         let raw = self.perf_mode_raw()?;
@@ -442,6 +465,15 @@ impl Backend for Mock {
 
     fn ac_auto_boot(&mut self) -> Result<bool> {
         Ok(self.ac_auto_boot)
+    }
+
+    fn battery_cycles(&mut self) -> Result<u16> {
+        Ok(121)
+    }
+
+    fn charge_voltage(&mut self) -> Result<ChargeVoltage> {
+        // Как на WUJIE 15X: ошибка прошивки снимает максимальные 250 мВ/банку.
+        Ok(ChargeVoltage { charge_mv: 16800, full_mv: 17800, cells: 4 })
     }
 
     fn set_ac_auto_boot(&mut self, enabled: bool) -> Result<()> {

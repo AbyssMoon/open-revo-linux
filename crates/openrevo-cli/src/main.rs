@@ -3,7 +3,7 @@
 use openrevo_core::backend::{fan_percent, Backend, Mock, TuxedoIo};
 use openrevo_core::ipc::{self, Request, Status};
 use openrevo_core::protocol::{
-    parse_kbd_color, ChargeLimit, ChargeProfile, PerfMode, CHARGE_LIMIT_MAX, CHARGE_LIMIT_MIN, KBD_COLORS,
+    parse_kbd_color, ChargeLimit, ChargeProfile, ChargeVoltage, PerfMode, CHARGE_LIMIT_MAX, CHARGE_LIMIT_MIN, KBD_COLORS,
 };
 use openrevo_core::sysinfo::SysInfo;
 
@@ -63,6 +63,12 @@ fn limit_line(l: ChargeLimit) -> String {
     }
 }
 
+fn voltage_line(v: ChargeVoltage) -> String {
+    let d = v.derating_per_cell();
+    let note = if d > 0 { format!(", EC снижает на {d} мВ/банку") } else { String::new() };
+    format!("{:.2} из {:.2} В ({}S{note})", f64::from(v.charge_mv) / 1000.0, f64::from(v.full_mv) / 1000.0, v.cells)
+}
+
 fn print_status(s: &Status) {
     let i = &s.sysinfo;
     println!("Бэкенд:          {}", s.backend);
@@ -94,6 +100,12 @@ fn print_status(s: &Status) {
     }
     if s.ac_auto_boot.is_some() {
         println!("Вкл. от зарядки: {}", onoff(s.ac_auto_boot));
+    }
+    if let Some(c) = s.battery_cycles {
+        println!("Циклы батареи:   {c}");
+    }
+    if let Some(v) = s.charge_voltage {
+        println!("Заряд до:        {}", voltage_line(v));
     }
     let pct = |v: Option<u8>| v.map_or("—".to_string(), |v| format!("{v}%"));
     let max = if s.fan_max == Some(true) { " (на максимуме)" } else { "" };
@@ -141,6 +153,14 @@ fn probe(mock: bool) {
             limit_line(l)
         ),
         Err(e) => println!("лимит заряда: {e}"),
+    }
+    match b.battery_cycles() {
+        Ok(c) => println!("циклы батареи: {c}"),
+        Err(e) => println!("циклы батареи: {e}"),
+    }
+    match b.charge_voltage() {
+        Ok(v) => println!("напряжение заряда: {}", voltage_line(v)),
+        Err(e) => println!("напряжение заряда: {e}"),
     }
     match b.fn_lock() {
         Ok(v) => println!("fn_lock: {}", onoff(Some(v))),

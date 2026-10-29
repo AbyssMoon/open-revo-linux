@@ -151,6 +151,24 @@ impl ChargeLimit {
     }
 }
 
+/// До какого напряжения EC заряжает батарею. EC снижает его на «износ»
+/// ступенями 50–250 мВ на банку (см. docs/RESEARCH.md).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChargeVoltage {
+    /// Цель EC, мВ.
+    pub charge_mv: u16,
+    /// Полное напряжение, которое просит батарея, мВ.
+    pub full_mv: u16,
+    pub cells: u8,
+}
+
+impl ChargeVoltage {
+    /// Снижение на банку, мВ.
+    pub fn derating_per_cell(self) -> u16 {
+        (self.full_mv - self.charge_mv) / u16::from(self.cells.max(1))
+    }
+}
+
 /// Подсветка клавиатуры (`/sys/class/leds/*:kbd_backlight`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KbdBacklight {
@@ -210,6 +228,12 @@ mod tests {
             assert_eq!(ChargeProfile::from_name(p.name()), Some(p));
             assert_eq!(ChargeProfile::from_limit(p.limit_percent()), Some(p));
         }
+    }
+
+    #[test]
+    fn charge_voltage_derating() {
+        let v = ChargeVoltage { charge_mv: 16800, full_mv: 17800, cells: 4 };
+        assert_eq!(v.derating_per_cell(), 250);
     }
 
     #[test]
